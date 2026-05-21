@@ -77,7 +77,7 @@ DefaultBeanDefinitionDocumentReader
 
 ## 全局导图：从 BeanDefinitionHolder 到 beanDefinitionMap
 
-先不要把下面这些方法看成彼此独立的代码片段。源码里“解析 `<bean>` 得到 holder”和“把 holder 注册进去”是紧挨着发生的；本文只是把注册部分单独拿出来展开看。
+先不要把下面这些方法看成彼此独立的代码片段。源码里“解析 `<bean>` 得到 holder”和“把 holder 注册进去”是紧挨着发生的；第 3 篇不是另起一条新流程，而是把第 2 篇 `[14] processBeanDefinition(...)` 的后半段放大来看。
 
 ```text
 运行时先记住 5 个核心对象：
@@ -109,15 +109,17 @@ DefaultBeanDefinitionDocumentReader
 
 [01] documentReader::processBeanDefinition(ele, delegate)
      方法所属：DefaultBeanDefinitionDocumentReader
-     关系：第 2 篇解析 <bean> 后的注册入口
+     关系：对应第 2 篇 [14] processBeanDefinition(...)
      作用：拿到 BeanDefinitionHolder，并把它交给注册工具类
      │
      ├─ [01.1] delegate::parseBeanDefinitionElement(ele)
      │        方法所属：BeanDefinitionParserDelegate
+     │        对应：第 2 篇 [15]-[20]
      │        作用：把 <bean> 解析成 BeanDefinitionHolder
      │
      ├─ [01.2] delegate::decorateBeanDefinitionIfRequired(ele, bdHolder)
      │        方法所属：BeanDefinitionParserDelegate
+     │        对应：第 2 篇 [21]
      │        作用：如果有自定义属性或装饰标签，对 bdHolder 做补充包装
      │
      ├─ [02] readerContext::getRegistry()
@@ -127,7 +129,7 @@ DefaultBeanDefinitionDocumentReader
      │
      ├─ [03] BeanDefinitionReaderUtils::registerBeanDefinition(bdHolder, registry)
      │        方法所属：BeanDefinitionReaderUtils
-     │        关系：工具方法
+     │        关系：工具方法，对应第 2 篇 [22]，这是第 3 篇真正展开的注册主线
      │        作用：拆出主 beanName、BeanDefinition、aliases
      │        │
      │        ├─ [04] registry::registerBeanDefinition(beanName, beanDefinition)
