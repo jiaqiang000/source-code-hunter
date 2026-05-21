@@ -91,10 +91,10 @@ ApplicationContext.refresh()
 
 这一篇解决的是：
 
-- Spring 从哪里开始启动 IoC 容器。
-- `refresh()` 为什么是容器启动主入口。
-- XML 配置文件如何被定位成 `Resource`。
-- `XmlBeanDefinitionReader` 是怎么被创建出来的。
+- Spring 从哪里开始启动 IoC 容器：通常从 `ApplicationContext.refresh()` 这条主线进入；XML 容器的构造方法最终也会走到这里。
+- `refresh()` 为什么是容器启动主入口：因为它负责重新准备 BeanFactory、加载 BeanDefinition、注册后处理器，并触发非懒加载单例的创建。
+- XML 配置文件如何被定位成 `Resource`：Spring 先把配置路径交给容器的资源加载能力，包装成 `Resource`，后续 reader 才能统一读取。
+- `XmlBeanDefinitionReader` 是怎么被创建出来的：`AbstractXmlApplicationContext` 在加载 BeanDefinition 时创建它，并给它设置 BeanFactory、Environment、ResourceLoader 等上下文。
 
 这一阶段还没有真正创建业务 Bean。
 
@@ -110,10 +110,10 @@ ApplicationContext.refresh()
 
 这一篇解决的是：
 
-- `<bean>` 标签如何被解析。
-- `id`、`name`、`class`、`parent` 等信息怎么进入 BeanDefinition。
-- `<property>`、`<constructor-arg>` 怎么变成 BeanDefinition 里的属性值。
-- `ref` 为什么不是立刻变成对象，而是先变成 `RuntimeBeanReference`。
+- `<bean>` 标签如何被解析：Spring 会遍历 XML 节点，把默认命名空间下的 `<bean>` 交给 `BeanDefinitionParserDelegate` 解析。
+- `id`、`name`、`class`、`parent` 等信息怎么进入 BeanDefinition：这些标签属性会被读出来，填进 `BeanDefinition` 的元信息里。
+- `<property>`、`<constructor-arg>` 怎么变成 BeanDefinition 里的属性值：它们会被解析成 `PropertyValue` 或构造器参数，暂存在 BeanDefinition 中。
+- `ref` 为什么不是立刻变成对象，而是先变成 `RuntimeBeanReference`：因为目标 Bean 可能还没创建，Spring 这里只能先记录“将来要引用谁”。
 
 这里重点理解一句话：
 
@@ -127,9 +127,9 @@ ApplicationContext.refresh()
 
 这一篇解决的是：
 
-- 解析出来的 BeanDefinition 如何注册进容器。
-- `DefaultListableBeanFactory` 为什么是核心注册中心。
-- `beanDefinitionMap` 和 `beanDefinitionNames` 分别保存什么。
+- 解析出来的 BeanDefinition 如何注册进容器：`BeanDefinitionReaderUtils` 最终会调用注册器，把 beanName 和 BeanDefinition 放进 BeanFactory。
+- `DefaultListableBeanFactory` 为什么是核心注册中心：它既保存 BeanDefinition，也负责后续按这些定义创建 Bean。
+- `beanDefinitionMap` 和 `beanDefinitionNames` 分别保存什么：前者按 beanName 查 BeanDefinition，后者保存 beanName 的注册顺序和列表。
 
 这里重点理解一句话：
 
@@ -143,10 +143,10 @@ ApplicationContext.refresh()
 
 这一篇解决的是：
 
-- BeanDefinition 已经加载完成之后，普通 Bean 创建之前，是否还能改 BeanDefinition。
-- `BeanFactoryPostProcessor` 为什么作用在 BeanDefinition 层面。
-- `BeanDefinitionRegistryPostProcessor` 为什么比普通 `BeanFactoryPostProcessor` 更早。
-- 为什么不建议在 BeanFactoryPostProcessor 里过早调用 `getBean()`。
+- BeanDefinition 已经加载完成之后，普通 Bean 创建之前，是否还能改 BeanDefinition：可以，这正是 `BeanFactoryPostProcessor` 的主要位置。
+- `BeanFactoryPostProcessor` 为什么作用在 BeanDefinition 层面：它运行时大部分普通 Bean 还没创建，所以更适合修改 Bean 的定义信息。
+- `BeanDefinitionRegistryPostProcessor` 为什么比普通 `BeanFactoryPostProcessor` 更早：因为它还能新增或注册 BeanDefinition，必须先把“有哪些 Bean”确定下来。
+- 为什么不建议在 BeanFactoryPostProcessor 里过早调用 `getBean()`：这会提前创建普通 Bean，可能绕过还没准备好的后处理器、代理和配置逻辑。
 
 这里重点理解一句话：
 
@@ -160,10 +160,10 @@ ApplicationContext.refresh()
 
 这一篇解决的是：
 
-- BeanPostProcessor 是怎么注册进容器的。
-- 它为什么发生在 Bean 初始化前后。
-- `postProcessBeforeInitialization` 和 `postProcessAfterInitialization` 分别在什么位置。
-- 为什么 `AutowiredAnnotationBeanPostProcessor` 这种处理器会参与依赖注入。
+- BeanPostProcessor 是怎么注册进容器的：`refresh()` 中会执行 `registerBeanPostProcessors(beanFactory)`，把这些处理器提前加入 BeanFactory。
+- 它为什么发生在 Bean 初始化前后：它的设计目的就是在 Bean 初始化回调前后插手，比如补充处理、包装对象或创建代理。
+- `postProcessBeforeInitialization` 和 `postProcessAfterInitialization` 分别在什么位置：前者在初始化方法之前，后者在初始化方法之后。
+- 为什么 `AutowiredAnnotationBeanPostProcessor` 这种处理器会参与依赖注入：它实现了更早的属性处理扩展点，`populateBean()` 会调用它来处理 `@Autowired` 字段和方法。
 
 这里重点理解一句话：
 
@@ -179,10 +179,10 @@ ApplicationContext.refresh()
 
 它解决的是：
 
-- `getBean()` 如何触发 Bean 创建。
-- 非懒加载单例为什么会在容器启动末尾提前创建。
-- `doGetBean()` 如何处理单例、原型、父容器、依赖关系。
-- `createBean()` 和 `doCreateBean()` 的主流程是什么。
+- `getBean()` 如何触发 Bean 创建：`getBean()` 会进入 `doGetBean()`，如果缓存里没有现成单例，就会走到 `createBean()`。
+- 非懒加载单例为什么会在容器启动末尾提前创建：这样可以让单例 Bean 在启动时就准备好，也能尽早暴露配置或依赖错误。
+- `doGetBean()` 如何处理单例、原型、父容器、依赖关系：它先查缓存和父容器，再处理 `dependsOn`，最后按 scope 决定创建或返回对象。
+- `createBean()` 和 `doCreateBean()` 的主流程是什么：`createBean()` 是外层入口，`doCreateBean()` 负责实例化、依赖注入、初始化和销毁注册。
 
 这里重点理解一句话：
 
@@ -198,11 +198,11 @@ ApplicationContext.refresh()
 
 它解决的是：
 
-- Bean 先实例化，再填充属性。
-- `populateBean()` 为什么是依赖注入的核心位置。
-- XML 里的 `<property ref="xxx">` 怎么最终变成 `getBean("xxx")`。
-- `RuntimeBeanReference` 为什么会触发依赖 Bean 的递归创建。
-- `BeanWrapper` 最后如何通过 setter 或字段写入属性值。
+- Bean 先实例化，再填充属性：Spring 必须先有一个对象实例，才能给它设置属性或注入依赖。
+- `populateBean()` 为什么是依赖注入的核心位置：它负责处理属性值、自动装配和属性相关的后处理器，是 Bean 创建中“把依赖塞进去”的阶段。
+- XML 里的 `<property ref="xxx">` 怎么最终变成 `getBean("xxx")`：`ref` 会先变成 `RuntimeBeanReference`，真正注入时再解析这个引用并调用 `getBean()`。
+- `RuntimeBeanReference` 为什么会触发依赖 Bean 的递归创建：如果被引用的 Bean 还没创建，解析引用时就会进入它自己的 `getBean()` 创建流程。
+- `BeanWrapper` 最后如何通过 setter 或字段写入属性值：普通 XML property 通常通过属性访问器调用 setter 写入；字段注入更多是 `@Autowired` 这类后处理器直接反射写入。
 
 这里重点理解一句话：
 
@@ -216,11 +216,11 @@ ApplicationContext.refresh()
 
 这一篇解决的是：
 
-- A 依赖 B，B 又依赖 A 时为什么会卡住。
-- Spring 为什么需要三级缓存。
-- `singletonObjects`、`earlySingletonObjects`、`singletonFactories` 分别解决什么问题。
-- 为什么循环依赖主要发生在属性填充阶段。
-- 为什么构造器循环依赖更难解决。
+- A 依赖 B，B 又依赖 A 时为什么会卡住：A 创建时需要 B，B 创建时又需要 A，如果只能等完整对象，就会互相等待。
+- Spring 为什么需要三级缓存：它需要同时区分完整单例、提前暴露的半成品对象，以及可以生成早期引用的工厂。
+- `singletonObjects`、`earlySingletonObjects`、`singletonFactories` 分别解决什么问题：一级缓存放完整 Bean，二级缓存放早期引用，三级缓存放能生成早期引用的 `ObjectFactory`。
+- 为什么循环依赖主要发生在属性填充阶段：对象已经实例化但属性还没填完，此时才会因为注入其他 Bean 触发互相引用。
+- 为什么构造器循环依赖更难解决：构造器没执行完之前对象还不存在，Spring 没有可以提前暴露的半成品实例。
 
 这里重点理解一句话：
 
