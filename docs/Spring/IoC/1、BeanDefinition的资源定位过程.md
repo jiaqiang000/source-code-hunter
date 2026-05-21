@@ -13,6 +13,95 @@ spring-beans https://github.com/AmyliaY/spring-beans-reading
 spring-context https://github.com/AmyliaY/spring-context-reading  
 ）
 
+## 先建立边界：BeanDefinition 不只来自 XML
+
+> [!note] 为什么这里会说“加载 BeanDefinition”
+> BeanDefinition 是 Spring 对“一个 Bean 应该怎么创建、叫什么、依赖什么、作用域是什么”的定义。
+> 本文这条线讲的是 XML 配置路径怎么被定位成 `Resource`，所以后面主要会看到 XML 读取和解析的入口。
+> 但在真实项目里，BeanDefinition 的来源不只有 XML `<bean>`。
+
+```text
+BeanDefinition 的常见来源：
+
+XML <bean>
+  -> XmlBeanDefinitionReader
+  -> BeanDefinition
+
+XML <context:component-scan>
+  -> 扫描 @Controller / @Service / @Component / @Repository
+  -> BeanDefinition
+
+@Configuration + @Bean
+  -> 配置类解析
+  -> BeanDefinition
+
+@MapperScan
+  -> 扫描 Mapper 接口
+  -> BeanDefinition
+
+@Autowired / @Resource
+  -> 不产生 BeanDefinition
+  -> 只在 Bean 创建阶段做依赖注入
+```
+
+结合 `biz` 项目看，它不是纯 XML，也不是纯注解，而是混合模式：
+
+```text
+biz-web/src/main/webapp/WEB-INF/web.xml
+  -> AnnotationConfigWebApplicationContext
+  -> com.yunti.biz.WebConfig
+  -> @ImportResource("classpath:spring-main.xml")
+  -> spring-main.xml
+     -> <context:component-scan base-package="com.yunti.biz"/>
+     -> <import resource="spring-config-basic.xml"/>
+     -> <import resource="spring-config-service.xml"/>
+     -> <import resource="spring-config-dao.xml"/>
+```
+
+所以 `biz` 里的 BeanDefinition 大概来自三类地方：
+
+```text
+1. WebConfig 里的 @Bean 方法
+2. spring-main.xml / spring-config-*.xml 里的 <bean>
+3. component-scan 扫到的 @Controller / @Service / @Component
+```
+
+结合 `web_bookln_java` 项目看，也是混合模式：
+
+```text
+ytdeep-app/src/main/webapp/WEB-INF/web.xml
+  -> AnnotationConfigWebApplicationContext
+  -> com.yt.AppConfig
+  -> @ImportResource("classpath:init-beans.xml")
+  -> init-beans.xml
+     -> <import resource="classpath:spring/spring-main.xml"/>
+
+ytdeep-app/src/main/resources/dispatcher-servlet.xml
+  -> <context:component-scan base-package="com.yt.ytdeep.action" use-default-filters="false">
+       <context:include-filter type="annotation" expression="org.springframework.stereotype.Controller"/>
+     </context:component-scan>
+```
+
+这表示 Controller 的 BeanDefinition 不是手写 `<bean>` 来的，而是扫描 `@Controller` 得来的。
+
+`@Resource` 和 `@Autowired` 要单独看：
+
+```text
+@Resource(name = "zkMqProducerService")
+private ZkMqProducerService zkMqProducerService;
+```
+
+这类注解不表示“把当前类注册成 BeanDefinition”，而是表示：
+
+```text
+当前 Bean 创建时，从容器里找一个依赖注入进来。
+```
+
+> [!tip] 读本文时怎么放置这个知识
+> 本文只讲 XML Resource 怎么被定位。
+> 可以把它理解为“XML 这一路 BeanDefinition 来源的前半段”。
+> 到了真实项目，XML、`component-scan`、`@Configuration`、`@Bean`、`@MapperScan` 都可能一起参与注册 BeanDefinition。
+
 ## 全局导图：类关系中的执行顺序
 
 > [!note] 本篇只追一个问题
