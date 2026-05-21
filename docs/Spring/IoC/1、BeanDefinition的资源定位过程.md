@@ -39,121 +39,142 @@ spring-context https://github.com/AmyliaY/spring-context-reading
         后面用来读取 XML，并把 BeanDefinition 注册到 beanFactory
 
 
-执行顺序：
+调用树：
 
 [01] context::FileSystemXmlApplicationContext(...)
      方法所属：FileSystemXmlApplicationContext
      关系：构造器
      作用：接收 XML 配置路径
-     ↓
+     │
+     ├─ [02] context::setConfigLocations(configLocations)
+     │        方法定义在：AbstractRefreshableConfigApplicationContext
+     │        关系：context 继承来的方法
+     │        作用：保存 XML 配置路径
+     │
+     └─ [03] context::refresh()
+              方法定义在：AbstractApplicationContext
+              关系：context 继承来的模板方法
+              作用：启动容器刷新流程
+              │
+              ├─ prepareRefresh()
+              │  作用：刷新前准备，本文不展开
+              │
+              ├─ [04] context::obtainFreshBeanFactory()
+              │        方法定义在：AbstractApplicationContext
+              │        关系：refresh() 内部调用
+              │        作用：创建并获取新的 BeanFactory
+              │        │
+              │        ├─ [05] context::refreshBeanFactory()
+              │        │        方法实现来自：AbstractRefreshableApplicationContext
+              │        │        关系：父类模板流程调用到下层实现
+              │        │        作用：刷新内部 BeanFactory
+              │        │        │
+              │        │        ├─ destroyBeans() / closeBeanFactory()
+              │        │        │  作用：如果已有旧 BeanFactory，先销毁旧内容
+              │        │        │
+              │        │        ├─ [06] beanFactory = new DefaultListableBeanFactory()
+              │        │        │        创建位置：createBeanFactory()
+              │        │        │        作用：创建真正保存 BeanDefinition 的容器
+              │        │        │
+              │        │        ├─ customizeBeanFactory(beanFactory)
+              │        │        │  作用：设置是否允许覆盖 BeanDefinition、是否允许循环引用等参数
+              │        │        │
+              │        │        └─ [07] context::loadBeanDefinitions(beanFactory)
+              │        │                 方法实现来自：AbstractXmlApplicationContext
+              │        │                 关系：refreshBeanFactory() 调用抽象方法，实际落到 XML 容器实现
+              │        │                 作用：开始加载 XML 里的 BeanDefinition
+              │        │                 │
+              │        │                 ├─ [08] reader = new XmlBeanDefinitionReader(beanFactory)
+              │        │                 │        创建位置：AbstractXmlApplicationContext::loadBeanDefinitions(beanFactory)
+              │        │                 │        作用：reader 以后解析出的 BeanDefinition 会注册进 beanFactory
+              │        │                 │
+              │        │                 ├─ reader.setEnvironment(...)
+              │        │                 │  作用：设置环境信息
+              │        │                 │
+              │        │                 ├─ [09] reader.setResourceLoader(context)
+              │        │                 │        调用位置：AbstractXmlApplicationContext::loadBeanDefinitions(beanFactory)
+              │        │                 │        作用：reader 以后遇到配置路径时，让 context 帮它找 Resource
+              │        │                 │
+              │        │                 ├─ reader.setEntityResolver(...)
+              │        │                 │  作用：设置 XML 实体解析器
+              │        │                 │
+              │        │                 ├─ initBeanDefinitionReader(reader)
+              │        │                 │  作用：初始化 reader，启用 XML 校验等
+              │        │                 │
+              │        │                 └─ [10] context::loadBeanDefinitions(reader)
+              │        │                          方法定义在：AbstractXmlApplicationContext
+              │        │                          关系：同一个类里的重载方法
+              │        │                          作用：取出配置路径，交给 reader
+              │        │                          │
+              │        │                          ├─ getConfigResources()
+              │        │                          │  作用：FileSystemXmlApplicationContext 通常为 null
+              │        │                          │
+              │        │                          └─ getConfigLocations()
+              │        │                             作用：取出构造器里保存的 XML 配置路径
+              │        │                             │
+              │        │                             └─ [11] reader::loadBeanDefinitions(configLocations)
+              │        │                                      方法定义在：AbstractBeanDefinitionReader
+              │        │                                      关系：XmlBeanDefinitionReader 继承来的方法
+              │        │                                      作用：遍历每个配置路径
+              │        │                                      │
+              │        │                                      └─ [12] reader::loadBeanDefinitions(location)
+              │        │                                               方法定义在：AbstractBeanDefinitionReader
+              │        │                                               作用：处理单个配置路径
+              │        │                                               │
+              │        │                                               └─ [13] reader::loadBeanDefinitions(location, actualResources)
+              │        │                                                        方法定义在：AbstractBeanDefinitionReader
+              │        │                                                        作用：准备把 location 解析成 Resource
+              │        │                                                        │
+              │        │                                                        ├─ [14] reader::getResourceLoader()
+              │        │                                                        │        结果：拿到第 [09] 步保存的 context
+              │        │                                                        │
+              │        │                                                        └─ [15] context::getResources(location)
+              │        │                                                                 方法定义在：AbstractApplicationContext
+              │        │                                                                 关系：context 同时也是 ResourcePatternResolver
+              │        │                                                                 作用：先按“资源模式”解析 location，比如是否有通配符
+              │        │                                                                 │
+              │        │                                                                 └─ [16] PathMatchingResourcePatternResolver::getResources(location)
+              │        │                                                                          创建位置：AbstractApplicationContext 构造时创建 resourcePatternResolver
+              │        │                                                                          关系：AbstractApplicationContext#getResources() 委托给它处理
+              │        │                                                                          作用：如果不是通配符路径，退化成单个 Resource 查找
+              │        │                                                                          │
+              │        │                                                                          └─ [17] context::getResource(location)
+              │        │                                                                                   方法定义在：DefaultResourceLoader
+              │        │                                                                                   关系：PathMatchingResourcePatternResolver 继续委托 ResourceLoader
+              │        │                                                                                   作用：判断 location 是 classpath、URL，还是普通文件路径
+              │        │                                                                                   │
+              │        │                                                                                   └─ [18] context::getResourceByPath(location)
+              │        │                                                                                            方法重写在：FileSystemXmlApplicationContext
+              │        │                                                                                            关系：DefaultResourceLoader#getResource() 内部调用可重写方法，运行时落到子类实现
+              │        │                                                                                            作用：普通文件路径交给 FileSystemXmlApplicationContext 处理
+              │        │                                                                                            │
+              │        │                                                                                            └─ [19] new FileSystemResource(path)
+              │        │                                                                                                     创建位置：FileSystemXmlApplicationContext::getResourceByPath(path)
+              │        │                                                                                                     作用：把 XML 配置路径包装成 Spring 的 Resource
+              │        │
+              │        └─ getBeanFactory()
+              │           作用：返回刚创建好的 beanFactory
+              │
+              ├─ prepareBeanFactory(beanFactory)
+              │  作用：配置 BeanFactory，本文不展开
+              │
+              ├─ postProcessBeanFactory(beanFactory)
+              │  作用：给子类扩展 BeanFactory 的机会，本文不展开
+              │
+              ├─ invokeBeanFactoryPostProcessors(beanFactory)
+              │  作用：执行 BeanFactoryPostProcessor，后面文章再看
+              │
+              ├─ registerBeanPostProcessors(beanFactory)
+              │  作用：注册 BeanPostProcessor，后面文章再看
+              │
+              ├─ initMessageSource() / initApplicationEventMulticaster()
+              │  作用：初始化国际化和事件广播，本文不展开
+              │
+              └─ finishBeanFactoryInitialization(beanFactory)
+                 作用：初始化非懒加载单例，不属于本文重点
 
-[02] context::setConfigLocations(configLocations)
-     方法定义在：AbstractRefreshableConfigApplicationContext
-     关系：context 继承来的方法
-     作用：保存 XML 配置路径
-     ↓
-
-[03] context::refresh()
-     方法定义在：AbstractApplicationContext
-     关系：context 继承来的模板方法
-     作用：启动容器刷新流程
-     ↓
-
-[04] context::obtainFreshBeanFactory()
-     方法定义在：AbstractApplicationContext
-     关系：refresh() 内部调用
-     作用：准备拿到新的 BeanFactory
-     ↓
-
-[05] context::refreshBeanFactory()
-     方法实现来自：AbstractRefreshableApplicationContext
-     关系：父类模板流程调用到下层实现
-     作用：刷新内部 BeanFactory
-     ↓
-
-[06] beanFactory = new DefaultListableBeanFactory()
-     创建位置：AbstractRefreshableApplicationContext::refreshBeanFactory()
-     关系：创建新对象
-     作用：后面保存 BeanDefinition
-     ↓
-
-[07] context::loadBeanDefinitions(beanFactory)
-     方法实现来自：AbstractXmlApplicationContext
-     关系：refreshBeanFactory() 调用抽象方法，实际落到 XML 容器实现
-     作用：开始加载 XML 里的 BeanDefinition
-     ↓
-
-[08] reader = new XmlBeanDefinitionReader(beanFactory)
-     创建位置：AbstractXmlApplicationContext::loadBeanDefinitions(beanFactory)
-     关系：创建新对象
-     作用：reader 以后解析出的 BeanDefinition 会注册进 beanFactory
-     ↓
-
-[09] reader.setResourceLoader(context)
-     调用位置：AbstractXmlApplicationContext::loadBeanDefinitions(beanFactory)
-     关系：把 context 传给 reader
-     作用：reader 以后遇到配置路径时，让 context 帮它找 Resource
-     ↓
-
-[10] context::loadBeanDefinitions(reader)
-     方法定义在：AbstractXmlApplicationContext
-     关系：同一个类里的重载方法
-     作用：取出配置路径，交给 reader
-     ↓
-
-[11] reader::loadBeanDefinitions(configLocations)
-     方法定义在：AbstractBeanDefinitionReader
-     关系：XmlBeanDefinitionReader 继承来的方法
-     作用：遍历每个配置路径
-     ↓
-
-[12] reader::loadBeanDefinitions(location)
-     方法定义在：AbstractBeanDefinitionReader
-     关系：上一步遍历时调用
-     作用：处理单个配置路径
-     ↓
-
-[13] reader::loadBeanDefinitions(location, actualResources)
-     方法定义在：AbstractBeanDefinitionReader
-     关系：继续进入重载方法
-     作用：准备把 location 解析成 Resource
-     ↓
-
-[14] reader::getResourceLoader()
-     方法定义在：AbstractBeanDefinitionReader
-     关系：拿出第 [09] 步保存的 ResourceLoader
-     结果：拿到的是 context，也就是 FileSystemXmlApplicationContext 实例
-     ↓
-
-[15] context::getResources(location)
-     方法定义在：AbstractApplicationContext
-     关系：context 同时也是 ResourcePatternResolver
-     作用：先按“资源模式”解析 location，比如是否有通配符
-     ↓
-
-[16] PathMatchingResourcePatternResolver::getResources(location)
-     创建位置：AbstractApplicationContext 构造时创建 resourcePatternResolver
-     关系：AbstractApplicationContext#getResources() 委托给它处理
-     作用：如果不是通配符路径，退化成单个 Resource 查找
-     ↓
-
-[17] context::getResource(location)
-     方法定义在：DefaultResourceLoader
-     关系：PathMatchingResourcePatternResolver 继续委托 ResourceLoader
-     作用：判断 location 是 classpath、URL，还是普通文件路径
-     ↓
-
-[18] context::getResourceByPath(location)
-     方法重写在：FileSystemXmlApplicationContext
-     关系：DefaultResourceLoader#getResource() 内部调用可重写方法，运行时落到子类实现
-     作用：普通文件路径交给 FileSystemXmlApplicationContext 处理
-     ↓
-
-[19] new FileSystemResource(path)
-     创建位置：FileSystemXmlApplicationContext::getResourceByPath(path)
-     作用：把 XML 配置路径包装成 Spring 的 Resource
-
-到这里，本篇结束：配置路径已经完成 Resource 定位。
+到 [19]，本篇关注的“配置路径完成 Resource 定位”已经结束。
+后面 reader 继续读取 Resource、解析 XML、封装 BeanDefinition，是下一篇的重点。
 ```
 
 ## 正文
@@ -414,7 +435,11 @@ protected void loadBeanDefinitions(XmlBeanDefinitionReader reader) throws BeansE
 
 AbstractBeanDefinitionReader 中对 loadBeanDefinitions 方法的各种重载及调用。
 
-### 11-17 AbstractBeanDefinitionReader：从 location 找到 Resource
+### 11-17 AbstractBeanDefinitionReader：把 location 交给 ResourcePatternResolver
+
+> [!note] 阅读提示
+> 这里的 `resourceLoader` 运行时是 `FileSystemXmlApplicationContext`。
+> 因为它实现了 `ResourcePatternResolver`，所以会先进 `getResources(location)`；非通配符路径最终再回到 `getResource(location)`。
 
 ```java
 /**
