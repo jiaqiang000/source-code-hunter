@@ -28,6 +28,7 @@ Spring IoC 可以先分成两大段：
 > [!note] 地图边界
 > 这张地图以当前 `source-code-hunter/docs/Spring/IoC` 这组 XML 主线文档为骨架。
 > 注解、Java Config、`@MapperScan` 等入口也会形成 `BeanDefinition`，但具体解析入口不同；本文先把它们放在同一条 IoC 生命周期里理解。
+> 本图只补到 Spring IoC 容器启动和 Bean 创建生命周期；Web 请求链、AOP、事务、应用关闭等阶段不在这里展开。
 
 - `ApplicationContext.refresh()`
   - `prepareRefresh()`
@@ -107,8 +108,20 @@ Spring IoC 可以先分成两大段：
       - 把解析后的值真正写入 Java 对象。
       - 对应：[[4、依赖注入(DI)]]
     - `initializeBean()`
-      - 属性填充之后进入初始化阶段。
-      - `postProcessBeforeInitialization()` / `postProcessAfterInitialization()` 的执行位置：[[BeanPostProcessor]]
+      - 属性填充之后进入初始化阶段，对应 `L2.1.3 - L2.1.6`。
+      - `invokeAwareMethods(...)`
+        - Aware 回调的一部分，对应 `L2.1.3`。
+        - 这里直接处理 `BeanNameAware`、`BeanClassLoaderAware`、`BeanFactoryAware`。
+        - `ApplicationContextAware` 等上下文回调通常由 `ApplicationContextAwareProcessor` 在初始化前处理阶段触发，这里先不展开。
+      - `applyBeanPostProcessorsBeforeInitialization(...)`
+        - BeanPostProcessor 初始化前处理，对应 `L2.1.4`：[[BeanPostProcessor]]
+        - `CommonAnnotationBeanPostProcessor` 会在这一段触发 `@PostConstruct`。
+      - `invokeInitMethods(...)`
+        - `InitializingBean.afterPropertiesSet()` / `init-method`，对应 `L2.1.5`。
+        - 当前没有专门文档，先不链接。
+      - `applyBeanPostProcessorsAfterInitialization(...)`
+        - BeanPostProcessor 初始化后处理，对应 `L2.1.6`：[[BeanPostProcessor]]
+        - AOP 代理通常在这一类后处理阶段完成，这里不展开 AOP 主线。
   - `finishRefresh()`
-    - 发布容器刷新完成事件。
+    - 发布容器刷新完成事件，对应 `L2.2`。
     - 当前没有专门文档，先不链接。
