@@ -83,26 +83,56 @@ DefaultBeanDefinitionDocumentReader
 运行时先记住 5 个核心对象：
 
 [对象1] beanFactory = DefaultListableBeanFactory 实例
-        它是在 AbstractRefreshableApplicationContext.refreshBeanFactory() 中创建的
-        它同时也是 BeanDefinitionRegistry
-        后面真正保存 BeanDefinition
+        它同时也是：
+        DefaultListableBeanFactory
+          extends AbstractAutowireCapableBeanFactory
+          extends AbstractBeanFactory
+          extends FactoryBeanRegistrySupport
+          extends DefaultSingletonBeanRegistry
+          extends SimpleAliasRegistry
+          implements BeanDefinitionRegistry
+
+        关系：
+        后面 reader、readerContext、documentReader 拿到的 registry，运行时都是这个 beanFactory
+
+        作用：
+        真正保存 BeanDefinition
 
 [对象2] reader = XmlBeanDefinitionReader 实例
-        它是在 AbstractXmlApplicationContext.loadBeanDefinitions(beanFactory) 中创建的
-        reader 内部的 registry 指向 beanFactory
+        它持有：
+        registry = beanFactory
+
+        关系：
+        reader 负责读取 XML，解析出来的 BeanDefinition 会通过 registry 注册回 beanFactory
 
 [对象3] readerContext = XmlReaderContext 实例
-        getRegistry() 会返回 reader.getRegistry()
-        也就是返回 beanFactory
+        它持有：
+        reader = XmlBeanDefinitionReader
+
+        关系：
+        readerContext.getRegistry()
+          -> reader.getRegistry()
+          -> beanFactory
 
 [对象4] documentReader = DefaultBeanDefinitionDocumentReader 实例
-        它负责处理 XML Document 中的默认标签，比如 <bean>
+        它持有：
+        readerContext = XmlReaderContext
+
+        关系：
+        documentReader 处理 XML Document 中的默认标签，比如 <bean>
+        需要注册时，通过 readerContext.getRegistry() 找到 beanFactory
 
 [对象5] bdHolder = BeanDefinitionHolder 实例
         它持有：
           - BeanDefinition
           - beanName
           - aliases
+
+        关系：
+        bdHolder 不是最终存储结构
+        BeanDefinitionReaderUtils 会把它拆开：
+          - beanName + BeanDefinition -> beanFactory.beanDefinitionMap
+          - aliases -> aliasMap
 
 
 调用树：
