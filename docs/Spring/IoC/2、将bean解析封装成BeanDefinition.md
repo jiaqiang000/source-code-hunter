@@ -6,9 +6,182 @@
 spring-beans https://github.com/AmyliaY/spring-beans-reading  
 spring-context https://github.com/AmyliaY/spring-context-reading ）
 
+## 先建立边界：本篇讲 XML 如何变成 BeanDefinition
+
+> [!note] 三篇文章的分工
+> [[1、BeanDefinition的资源定位过程]] 讲 XML 配置路径怎么定位成 `Resource`。
+> 本文讲 `Resource` 里的 XML 内容怎么解析成 `BeanDefinition`。
+> [[3、将BeanDefinition注册进IoC容器]] 再展开 `BeanDefinition` 怎么真正放进 `DefaultListableBeanFactory`。
+
+本文详细展开的是 XML 默认命名空间里的 `<bean>`：
+
+```text
+XML Resource
+  -> DOM Document
+  -> <beans>
+  -> <bean>
+  -> AbstractBeanDefinition
+  -> BeanDefinitionHolder
+  -> BeanDefinitionReaderUtils.registerBeanDefinition(...)
+```
+
+这里要和真实项目里的注解扫描区分开：
+
+```text
+<bean>
+  -> 默认命名空间
+  -> processBeanDefinition(...)
+  -> BeanDefinitionParserDelegate 解析 class / property / constructor-arg
+
+<context:component-scan>
+  -> 非默认命名空间
+  -> delegate.parseCustomElement(...)
+  -> 后续才会触发组件扫描，把 @Controller / @Service / @Component 注册成 BeanDefinition
+```
+
+所以本文不是在讲 `@Controller`、`@Service`、`@Resource` 的完整处理流程。
+
+```text
+@Controller / @Service / @Component
+  -> 可能通过 component-scan 变成 BeanDefinition
+
+@Resource / @Autowired
+  -> 不产生 BeanDefinition
+  -> 在 Bean 创建阶段做依赖注入
+```
+
+> [!info] 源码版本说明
+> 本文的源码主线按本地 Spring Framework `v5.3.20` 校对，主要对应：
+> `XmlBeanDefinitionReader`、`DefaultBeanDefinitionDocumentReader`、`BeanDefinitionParserDelegate`。
+> 原文代码片段偏早版本，和 `v5.3.20` 在个别方法拆分上略有差异，例如 `doLoadBeanDefinitions(...)` 在 `v5.3.20` 中会再拆到 `doLoadDocument(...)`，但整体调用关系一致。
+
+## 全局导图：XML 解析成 BeanDefinition 的调用树
+
+```text
+运行时先记住 4 个核心对象：
+
+[对象1] reader = XmlBeanDefinitionReader
+        负责读取 XML Resource，并启动 XML -> Document -> BeanDefinition 的流程
+
+[对象2] documentReader = DefaultBeanDefinitionDocumentReader
+        负责从 DOM Document 的根元素 <beans> 开始分发解析
+
+[对象3] delegate = BeanDefinitionParserDelegate
+        负责把 <bean> 的 id、name、class、property 等细节填进 BeanDefinition
+
+[对象4] registry = DefaultListableBeanFactory
+        实现 BeanDefinitionRegistry，最终接收 BeanDefinition 注册
+
+
+调用树：
+
+[00] context::refreshBeanFactory()
+     所属类：AbstractRefreshableApplicationContext
+     关系：承接第 1 篇，refresh() 中进入 BeanFactory 刷新流程
+     作用：创建 beanFactory，并调用 loadBeanDefinitions(beanFactory)
+     │
+     └─ [01] context::loadBeanDefinitions(beanFactory)
+              所属类：AbstractXmlApplicationContext
+              作用：创建 XmlBeanDefinitionReader，并把 beanFactory 传给 reader
+              │
+              ├─ reader = new XmlBeanDefinitionReader(beanFactory)
+              │  作用：reader 以后解析出的 BeanDefinition 会注册进这个 beanFactory
+              │
+              ├─ reader.setResourceLoader(context)
+              │  作用：reader 需要靠 context 定位 XML Resource
+              │
+              └─ [02] context::loadBeanDefinitions(reader)
+                       所属类：AbstractXmlApplicationContext
+                       作用：取出 XML 配置路径，交给 reader
+                       │
+                       └─ [03] reader::loadBeanDefinitions(location)
+                                所属类：AbstractBeanDefinitionReader
+                                作用：把 location 定位成 Resource，再回到 XmlBeanDefinitionReader
+                                │
+                                └─ [04] reader::loadBeanDefinitions(Resource)
+                                         所属类：XmlBeanDefinitionReader
+                                         作用：XML Resource 进入真正解析入口
+                                         │
+                                         └─ [05] reader::loadBeanDefinitions(EncodedResource)
+                                                  作用：给 Resource 包一层编码信息，并打开 InputStream
+                                                  │
+                                                  └─ [06] reader::doLoadBeanDefinitions(inputSource, resource)
+                                                           作用：把 XML 输入流解析成 Document，并启动 BeanDefinition 解析
+                                                           │
+                                                           ├─ [07] reader::doLoadDocument(inputSource, resource)
+                                                           │        所属类：XmlBeanDefinitionReader
+                                                           │        作用：委托 documentLoader.loadDocument(...) 得到 DOM Document
+                                                           │
+                                                           └─ [08] reader::registerBeanDefinitions(doc, resource)
+                                                                    所属类：XmlBeanDefinitionReader
+                                                                    作用：创建 documentReader，进入 XML 元素解析
+                                                                    │
+                                                                    ├─ [09] documentReader = DefaultBeanDefinitionDocumentReader
+                                                                    │        作用：处理 DOM Document 的根元素
+                                                                    │
+                                                                    └─ [10] documentReader::registerBeanDefinitions(doc, readerContext)
+                                                                             所属类：DefaultBeanDefinitionDocumentReader
+                                                                             作用：获取根元素 <beans>
+                                                                             │
+                                                                             └─ [11] documentReader::doRegisterBeanDefinitions(root)
+                                                                                      作用：创建 delegate，并解析根元素下的子元素
+                                                                                      │
+                                                                                      ├─ delegate = BeanDefinitionParserDelegate
+                                                                                      │  作用：后续 <bean> 的具体属性都交给它解析
+                                                                                      │
+                                                                                      └─ [12] documentReader::parseBeanDefinitions(root, delegate)
+                                                                                               作用：区分默认命名空间和自定义命名空间
+                                                                                               │
+                                                                                               ├─ 默认命名空间
+                                                                                               │  └─ [13] documentReader::parseDefaultElement(ele, delegate)
+                                                                                               │           ├─ <import>
+                                                                                               │           │  └─ importBeanDefinitionResource(ele)
+                                                                                               │           │     作用：递归加载其他 XML
+                                                                                               │           │
+                                                                                               │           ├─ <alias>
+                                                                                               │           │  └─ processAliasRegistration(ele)
+                                                                                               │           │     作用：注册别名
+                                                                                               │           │
+                                                                                               │           ├─ <bean>
+                                                                                               │           │  └─ [14] processBeanDefinition(ele, delegate)
+                                                                                               │           │       作用：解析单个 <bean>
+                                                                                               │           │       │
+                                                                                               │           │       ├─ [15] delegate.parseBeanDefinitionElement(ele)
+                                                                                               │           │       │        所属类：BeanDefinitionParserDelegate
+                                                                                               │           │       │        作用：把 <bean> 解析成 BeanDefinitionHolder
+                                                                                               │           │       │        │
+                                                                                               │           │       │        ├─ [16] 解析 id / name / aliases
+                                                                                               │           │       │        ├─ [17] 解析 class / parent，创建 AbstractBeanDefinition
+                                                                                               │           │       │        ├─ [18] 解析 scope / lazy-init / init-method 等属性
+                                                                                               │           │       │        ├─ [19] 解析 constructor-arg / property / qualifier
+                                                                                               │           │       │        │        ├─ ref -> RuntimeBeanReference
+                                                                                               │           │       │        │        ├─ value -> TypedStringValue
+                                                                                               │           │       │        │        └─ list -> ManagedList
+                                                                                               │           │       │        └─ [20] BeanDefinitionHolder(beanDefinition, beanName, aliases)
+                                                                                               │           │       │
+                                                                                               │           │       ├─ [21] decorateBeanDefinitionIfRequired(...)
+                                                                                               │           │       │        作用：处理自定义属性或命名空间装饰
+                                                                                               │           │       │
+                                                                                               │           │       └─ [22] BeanDefinitionReaderUtils.registerBeanDefinition(...)
+                                                                                               │           │                作用：进入注册阶段，下一篇展开
+                                                                                               │           │
+                                                                                               │           └─ <beans>
+                                                                                               │              └─ doRegisterBeanDefinitions(ele)
+                                                                                               │                 作用：递归解析嵌套 <beans>
+                                                                                               │
+                                                                                               └─ 非默认命名空间
+                                                                                                  └─ delegate.parseCustomElement(ele)
+                                                                                                     例子：<context:component-scan>
+
+到 [22]，本篇关注的“XML <bean> 解析成 BeanDefinitionHolder，并进入注册入口”已经结束。
+下一篇再展开 BeanDefinitionReaderUtils 怎么把它注册进 BeanFactory。
+```
+
 ## 正文
 
 首先看一下 AbstractRefreshableApplicationContext 的 refreshBeanFactory() 方法，这是一个模板方法，其中调用的 loadBeanDefinitions() 方法是一个抽象方法，交由子类实现。
+
+### 00 AbstractRefreshableApplicationContext：承接第 1 篇进入加载入口
 
 ```java
 /**
@@ -43,6 +216,8 @@ protected final void refreshBeanFactory() throws BeansException {
 
 下面看一下 AbstractRefreshableApplicationContext 的子类 AbstractXmlApplicationContext 对 loadBeanDefinitions() 方法的实现。
 
+### 01 AbstractXmlApplicationContext：创建 XmlBeanDefinitionReader
+
 ```java
 @Override
 protected void loadBeanDefinitions(DefaultListableBeanFactory beanFactory) throws BeansException, IOException {
@@ -68,6 +243,8 @@ protected void loadBeanDefinitions(DefaultListableBeanFactory beanFactory) throw
 ```
 
 接着看一下上面最后一个调用的方法 loadBeanDefinitions(XmlBeanDefinitionReader reader)。
+
+### 02 AbstractXmlApplicationContext：取出配置路径交给 reader
 
 ```java
 /**
@@ -99,6 +276,8 @@ protected void loadBeanDefinitions(XmlBeanDefinitionReader reader) throws BeansE
 ```
 
 AbstractBeanDefinitionReader 对 loadBeanDefinitions() 方法的三重重载。
+
+### 03 AbstractBeanDefinitionReader：把 location 定位成 Resource
 
 ```java
 /**
@@ -180,6 +359,12 @@ public int loadBeanDefinitions(String location, Set<Resource> actualResources) t
 ```
 
 XmlBeanDefinitionReader 读取器中的方法执行流，按代码的先后顺序。
+
+### 04-08 XmlBeanDefinitionReader：Resource 变成 Document 并进入注册解析
+
+> [!note] 源码提示
+> 在 Spring Framework `v5.3.20` 中，`doLoadBeanDefinitions(...)` 会调用 `doLoadDocument(...)`，再由 `doLoadDocument(...)` 委托 `documentLoader.loadDocument(...)`。
+> 原文代码片段把 `documentLoader.loadDocument(...)` 直接写在 `doLoadBeanDefinitions(...)` 里，属于方法拆分差异，不影响主线。
 
 ```java
 /**
@@ -295,6 +480,12 @@ public int registerBeanDefinitions(Document doc, Resource resource) throws BeanD
 ```
 
 文档解析器 DefaultBeanDefinitionDocumentReader 对配置文件中元素的解析。
+
+### 09-14 DefaultBeanDefinitionDocumentReader：从 Document 根元素分发 import、alias、bean
+
+> [!note] 阅读提示
+> 这里的 `delegate.parseCustomElement(ele)` 是理解注解扫描的入口之一。
+> 例如 `<context:component-scan>` 不走默认 `<bean>` 分支，而是走自定义命名空间解析，后续才会触发扫描 `@Controller`、`@Service`、`@Component`。
 
 ```java
 // 根据 Spring 对 Bean 的定义规则进行解析
@@ -532,6 +723,8 @@ protected void processBeanDefinition(Element ele, BeanDefinitionParserDelegate d
 
 看一下 BeanDefinitionParserDelegate 中对 bean 元素的详细解析过程。
 
+### 15-20 BeanDefinitionParserDelegate：把 `<bean>` 细节填进 BeanDefinition
+
 ```java
 /**
  * 解析 <bean> 元素的入口
@@ -683,6 +876,12 @@ public AbstractBeanDefinition parseBeanDefinitionElement(
 ```
 
 对 bean 的部分子元素进行解析的具体实现。
+
+### 19.1-19.4 BeanDefinitionParserDelegate：property 的 ref、value、集合先变成元数据
+
+> [!note] 阅读提示
+> 这里不是依赖注入。`ref` 只是先变成 `RuntimeBeanReference`，表示“将来创建 Bean 时要引用谁”。
+> 真正把依赖对象注入进去，是后面 Bean 创建阶段的 `populateBean()` / `applyPropertyValues()`。
 
 ```java
 /**
