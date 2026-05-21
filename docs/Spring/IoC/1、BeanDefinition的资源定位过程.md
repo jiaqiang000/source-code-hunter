@@ -183,6 +183,103 @@ private ZkMqProducerService zkMqProducerService;
 > 可以把它理解为“XML 这一路 BeanDefinition 来源的前半段”。
 > 到了真实项目，XML、`component-scan`、`@Configuration`、`@Bean`、`@MapperScan` 都可能一起参与注册 BeanDefinition。
 
+## 先看容器关系：refresh 是启动总流程
+
+在进入 `FileSystemXmlApplicationContext` 的具体调用链之前，先把几个容器相关类型的位置放清楚。
+
+> [!note] 先分清接口能力和抽象类实现
+> `ApplicationContext` 是 Spring 容器对外暴露的核心接口。
+> `ConfigurableApplicationContext` 在它的基础上增加了启动、关闭、配置这类生命周期能力。
+> `AbstractApplicationContext` 是 `refresh()` 大流程的主要模板实现。
+> 具体 XML 怎么加载、注解怎么注册、Web 容器怎么初始化，则由它的子类在某些步骤里接上自己的实现。
+
+```text
+接口能力关系：
+
+ApplicationContext
+  -> 对外表示“这是一个 Spring 应用上下文”
+  -> 能取 Bean、列出 Bean、读资源、发事件、处理国际化消息
+  -> 但它本身不直接强调容器怎么启动
+
+ConfigurableApplicationContext
+  -> extends ApplicationContext
+  -> 增加 refresh()、close()、setParent()、setEnvironment() 等生命周期和配置能力
+  -> refresh() 方法定义在这里
+
+AbstractApplicationContext
+  -> implements ConfigurableApplicationContext
+  -> 实现 refresh() 主流程
+  -> 是大部分 ApplicationContext 具体实现的启动模板
+```
+
+本文这条 XML 主线的类继承关系是：
+
+```text
+FileSystemXmlApplicationContext
+  -> AbstractXmlApplicationContext
+  -> AbstractRefreshableConfigApplicationContext
+  -> AbstractRefreshableApplicationContext
+  -> AbstractApplicationContext
+  -> DefaultResourceLoader
+```
+
+对应的职责可以这样看：
+
+```text
+AbstractApplicationContext
+  refresh()
+    -> 容器启动总控
+    -> 准备环境
+    -> 获取 BeanFactory
+    -> 执行 BeanFactoryPostProcessor
+    -> 注册 BeanPostProcessor
+    -> 初始化非懒加载单例 Bean
+    -> 发布容器刷新完成事件
+
+AbstractRefreshableApplicationContext
+  refreshBeanFactory()
+    -> createBeanFactory()
+    -> 得到 DefaultListableBeanFactory
+    -> loadBeanDefinitions(beanFactory)
+    -> this.beanFactory = beanFactory
+
+AbstractXmlApplicationContext
+  loadBeanDefinitions(beanFactory)
+    -> new XmlBeanDefinitionReader(beanFactory)
+    -> reader.loadBeanDefinitions(...)
+
+FileSystemXmlApplicationContext
+  getResourceByPath(...)
+    -> 把文件系统路径解析成 FileSystemResource
+
+DefaultListableBeanFactory
+  beanDefinitionMap
+    -> 最终保存解析出来的 BeanDefinition
+```
+
+所以这篇文章里看到的“资源定位”，不是一个独立小流程，而是嵌在 `AbstractApplicationContext.refresh()` 里的前半段：
+
+```text
+refresh()
+  -> obtainFreshBeanFactory()
+    -> refreshBeanFactory()
+      -> createBeanFactory()
+      -> loadBeanDefinitions(beanFactory)
+        -> XmlBeanDefinitionReader 读取 XML 配置位置
+        -> ResourceLoader 把配置位置解析成 Resource
+        -> 后续再解析成 BeanDefinition 并注册进 DefaultListableBeanFactory
+```
+
+一句话概括：
+
+```text
+AbstractApplicationContext 负责启动总流程。
+AbstractRefreshableApplicationContext 负责创建并持有 DefaultListableBeanFactory。
+AbstractXmlApplicationContext 负责把 XML 加载逻辑接进来。
+FileSystemXmlApplicationContext 负责文件系统路径的资源解析细节。
+DefaultListableBeanFactory 负责保存 BeanDefinition，并在后续创建 Bean。
+```
+
 ## 全局导图：类关系中的执行顺序
 
 > [!note] 本篇只追一个问题
