@@ -239,7 +239,7 @@ AbstractApplicationContext
 AbstractRefreshableApplicationContext
   refreshBeanFactory()
     -> createBeanFactory()
-    -> 得到 DefaultListableBeanFactory
+    -> 得到 DefaultListableBeanFactory    //DefaultListableBeanFactory在这里
     -> loadBeanDefinitions(beanFactory)
     -> this.beanFactory = beanFactory
 
