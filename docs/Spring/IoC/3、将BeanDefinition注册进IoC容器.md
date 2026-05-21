@@ -433,5 +433,6 @@ getReaderContext().fireComponentRegistered(new BeanComponentDefinition(bdHolder)
 
 > [!note] 这一篇最终要记住什么
 > `BeanDefinition` 不是注册进 `ApplicationContext` 自己的某个 Map。
-> 它注册进 `ApplicationContext` 内部持有的 `DefaultListableBeanFactory`。
-> 一路上看到的 `BeanDefinitionRegistry` 只是接口视角，当前 XML 主线里的运行时对象就是同一个 `DefaultListableBeanFactory`。
+> `DefaultListableBeanFactory` 实现了 `BeanDefinitionRegistry`，所以源码里看到的 `registry.registerBeanDefinition(...)`，当前 XML 主线里最终会调用到 `DefaultListableBeanFactory.registerBeanDefinition(...)`。
+> `BeanDefinition` 最终保存到 `DefaultListableBeanFactory.beanDefinitionMap` 中。
+> 至于这个 `DefaultListableBeanFactory` 是在哪个 `ApplicationContext` 下面创建并持有的，可以回到 [[1、BeanDefinition的资源定位过程]] 看 `refresh()` 到 `refreshBeanFactory()` 的那段。
