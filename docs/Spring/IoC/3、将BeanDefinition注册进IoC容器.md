@@ -10,8 +10,8 @@ spring-context https://github.com/AmyliaY/spring-context-reading
 ## 先建立边界：注册 BeanDefinition，不是创建 Bean
 
 > [!note] 本篇只追一个问题
-> 前面已经把 XML 中的 `<bean>` 解析成了 `BeanDefinitionHolder`。
-> 本篇只看这个 `BeanDefinitionHolder` 怎么注册进容器内部的注册表。
+> 前面已经看到 XML 中的 `<bean>` 会先被解析成 `BeanDefinitionHolder`，并且源码马上会把这个 holder 交给注册入口。
+> 本篇重点不是重新解析 `<bean>`，而是展开 `registerBeanDefinition(...)` 之后，`BeanDefinition` 最终怎么落到容器内部的注册表。
 > 这里仍然没有创建业务 Bean，只是在保存“Bean 应该怎么创建”的元数据。
 
 把前三篇连起来看：
@@ -77,7 +77,7 @@ DefaultBeanDefinitionDocumentReader
 
 ## 全局导图：从 BeanDefinitionHolder 到 beanDefinitionMap
 
-先不要把下面这些方法看成彼此独立的代码片段。它们是在第 2 篇解析完 `<bean>` 之后，沿着同一个 `DefaultListableBeanFactory` 注册下去的。
+先不要把下面这些方法看成彼此独立的代码片段。源码里“解析 `<bean>` 得到 holder”和“把 holder 注册进去”是紧挨着发生的；本文只是把注册部分单独拿出来展开看。
 
 ```text
 运行时先记住 5 个核心对象：
