@@ -23,6 +23,59 @@ Spring IoC 可以先分成两大段：
               - 初始化
                 - 可用 Bean
 
+## refresh 之前：是谁把容器启动起来的
+
+> [!note] 入口边界
+> `ApplicationContext.refresh()` 不是 JVM 自动调用的。
+> 它一定是某个启动入口先创建了 `ApplicationContext`，配置好资源位置、父容器、环境等信息，然后显式或间接调用 `refresh()`。
+
+- 普通 XML 启动
+  - 典型写法：`new ClassPathXmlApplicationContext(...)` / `new FileSystemXmlApplicationContext(...)`
+  - 构造器接收 XML 路径。
+  - 构造器内部设置 `configLocations`。
+  - 如果 `refresh=true`，构造器内部直接调用 `refresh()`。
+  - 然后进入下面的 `ApplicationContext.refresh()` 主流程。
+
+- 普通注解启动
+  - 典型写法：`new AnnotationConfigApplicationContext(AppConfig.class)` 或 `new AnnotationConfigApplicationContext("basePackage")`
+  - 构造器先注册配置类，或者扫描包路径。
+  - 注册和扫描会先形成一批 `BeanDefinition`。
+  - 构造器随后调用 `refresh()`。
+  - 然后进入下面的 `ApplicationContext.refresh()` 主流程。
+
+- 传统 Web 父容器启动
+  - Servlet 容器读取 `web.xml`。
+  - 发现 `ContextLoaderListener`。
+  - 调用 `ContextLoaderListener.contextInitialized(...)`。
+  - 进入 `ContextLoader.initWebApplicationContext(servletContext)`。
+  - 根据 `contextClass` 创建 `WebApplicationContext`。
+  - 根据 `contextConfigLocation` 设置配置入口。
+  - 调用 `ContextLoader.configureAndRefreshWebApplicationContext(...)`。
+  - 最后调用 `wac.refresh()`。
+  - 然后进入下面的 `ApplicationContext.refresh()` 主流程。
+  - 你项目里的 `biz` 和 `web_bookln_java` 都是这种形态：父容器由 `ContextLoaderListener` 启动，`contextClass` 指向 `AnnotationConfigWebApplicationContext`，`contextConfigLocation` 分别指向项目配置类。
+
+- Spring MVC 子容器启动
+  - Servlet 容器读取 `web.xml`。
+  - 发现 `DispatcherServlet`，并且 `load-on-startup` 大于等于 0。
+  - Servlet 容器初始化 `DispatcherServlet`。
+  - 进入 `FrameworkServlet.initServletBean()`。
+  - 调用 `FrameworkServlet.initWebApplicationContext()`。
+  - 如果没有外部传入现成的子容器，就创建一个新的 `WebApplicationContext`。
+  - 把父容器设置为前面的 root `WebApplicationContext`。
+  - 根据 Servlet 自己的 `contextConfigLocation` 设置 MVC 配置入口。
+  - 调用 `FrameworkServlet.configureAndRefreshWebApplicationContext(...)`。
+  - 最后调用 `wac.refresh()`。
+  - 然后进入下面的 `ApplicationContext.refresh()` 主流程。
+  - 这也是为什么传统 Web 项目里可能看到不止一次 `refresh()`：父容器刷新一次，MVC 子容器也会刷新一次。
+
+- Spring Boot 启动
+  - 典型写法：`SpringApplication.run(...)`。
+  - `SpringApplication` 创建具体的 `ApplicationContext`。
+  - 准备环境、监听器、初始化器等启动上下文。
+  - 调用内部刷新入口，最终仍然落到 `ApplicationContext.refresh()`。
+  - 本文不展开 Boot 自动配置，只把它当作另一种调用到 `refresh()` 的入口。
+
 ## 完整生命周期地图
 
 > [!note] 地图边界
