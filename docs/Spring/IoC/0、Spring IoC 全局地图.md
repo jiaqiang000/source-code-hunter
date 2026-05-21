@@ -34,6 +34,10 @@ Spring IoC 可以先分成两大段：
   - `prepareRefresh()`
     - 准备刷新状态、环境属性和容器 active 标记。
     - 当前没有专门文档，先不链接。
+  - 条件装配 / 条件注册边界
+    - 对应 `L1.1`。
+    - Spring Boot 的 `@Conditional`、自动配置条件等，会影响哪些配置类或 BeanDefinition 能进入后续流程。
+    - 这不是当前 XML 主线文档的重点，先只放在 BeanDefinition 形成之前理解，不展开 Boot 自动配置。
   - `obtainFreshBeanFactory()`
     - 定位 BeanDefinition 资源：[[1、BeanDefinition的资源定位过程]]
       - 重点：从容器入口走到 XML 配置资源定位。
@@ -94,11 +98,20 @@ Spring IoC 可以先分成两大段：
     - `createBeanInstance()`
       - 先创建一个 Java 对象。
       - 可能走默认构造器、构造器自动装配、工厂方法或 CGLIB。
+      - 对应 `L2.1.1 Bean 实例化`。
+      - 选择构造器：构造器注入、`@Autowired` 构造器判断会落在这里。
+      - 解析构造器参数依赖：`BeanFactory` 根据类型、名称、`@Qualifier`、`@Primary` 等规则找依赖。
+      - 调用构造器创建对象：构造器注入最终发生在这里。
       - 对应：[[4、依赖注入(DI)]]
     - `populateBean()`
       - Bean 创建中的属性填充入口。
       - XML `<property ref="...">` 注入：[[4、依赖注入(DI)]]
-      - `@Autowired` / `@Value` 注解注入：[[BeanPostProcessor]]，详细见 [[Spring Bean 创建：Autowired 依赖注入流程]]
+      - `@Autowired` / `@Inject` / `@Value` 注解注入：[[BeanPostProcessor]]，详细见 [[Spring Bean 创建：Autowired 依赖注入流程]]
+      - `@Resource` 注解注入：[[BeanPostProcessor]]，由 `CommonAnnotationBeanPostProcessor` 参与处理。
+      - 对应 `L2.1.2 依赖注入 / 属性填充`。
+      - 解析字段 / 方法注入点：找出哪些字段、setter 或普通方法需要被注入。
+      - 查找依赖 Bean：根据注入点信息从 `BeanFactory` 中解析候选 Bean。
+      - 写入字段或调用方法：字段注入、方法注入最终发生在这里。
       - 循环依赖暴露点：[[循环依赖]]
     - `applyPropertyValues()`
       - 解析 `PropertyValue`，把 `RuntimeBeanReference`、`TypedStringValue`、集合等元数据变成真实值。
