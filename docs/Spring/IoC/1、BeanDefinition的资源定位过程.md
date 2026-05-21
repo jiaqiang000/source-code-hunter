@@ -125,19 +125,31 @@ spring-context https://github.com/AmyliaY/spring-context-reading
      结果：拿到的是 context，也就是 FileSystemXmlApplicationContext 实例
      ↓
 
-[15] context::getResource(location)
+[15] context::getResources(location)
+     方法定义在：AbstractApplicationContext
+     关系：context 同时也是 ResourcePatternResolver
+     作用：先按“资源模式”解析 location，比如是否有通配符
+     ↓
+
+[16] PathMatchingResourcePatternResolver::getResources(location)
+     创建位置：AbstractApplicationContext 构造时创建 resourcePatternResolver
+     关系：AbstractApplicationContext#getResources() 委托给它处理
+     作用：如果不是通配符路径，退化成单个 Resource 查找
+     ↓
+
+[17] context::getResource(location)
      方法定义在：DefaultResourceLoader
-     关系：context 继承了 DefaultResourceLoader 的方法
+     关系：PathMatchingResourcePatternResolver 继续委托 ResourceLoader
      作用：判断 location 是 classpath、URL，还是普通文件路径
      ↓
 
-[16] context::getResourceByPath(location)
+[18] context::getResourceByPath(location)
      方法重写在：FileSystemXmlApplicationContext
      关系：DefaultResourceLoader#getResource() 内部调用可重写方法，运行时落到子类实现
      作用：普通文件路径交给 FileSystemXmlApplicationContext 处理
      ↓
 
-[17] new FileSystemResource(path)
+[19] new FileSystemResource(path)
      创建位置：FileSystemXmlApplicationContext::getResourceByPath(path)
      作用：把 XML 配置路径包装成 Spring 的 Resource
 
@@ -151,7 +163,7 @@ spring-context https://github.com/AmyliaY/spring-context-reading
 ### 01-03 FileSystemXmlApplicationContext：保存配置路径并触发 refresh
 
 > [!note] 阅读提示
-> 这个代码块末尾的 `getResourceByPath()` 对应导图里的 [16-17]，是资源定位的终点。
+> 这个代码块末尾的 `getResourceByPath()` 对应导图里的 [18-19]，是资源定位的终点。
 > 第一次读这里时，先关注构造器里的 `setConfigLocations(configLocations)` 和 `refresh()`。
 
 ```java
@@ -402,7 +414,7 @@ protected void loadBeanDefinitions(XmlBeanDefinitionReader reader) throws BeansE
 
 AbstractBeanDefinitionReader 中对 loadBeanDefinitions 方法的各种重载及调用。
 
-### 11-15 AbstractBeanDefinitionReader：从 location 找到 ResourceLoader
+### 11-17 AbstractBeanDefinitionReader：从 location 找到 Resource
 
 ```java
 /**
@@ -483,9 +495,9 @@ public int loadBeanDefinitions(String location, Set<Resource> actualResources) t
 }
 ```
 
-resourceLoader 的 getResource() 方法有多种实现，看清 FileSystemXmlApplicationContext 的继承体系就可以明确，其走的是 DefaultResourceLoader 中的实现。
+resourceLoader 的 getResource() 方法有多种实现。严格来说，当前 ApplicationContext 也实现了 ResourcePatternResolver，所以前面会先经过 getResources(location) 和 PathMatchingResourcePatternResolver；如果不是通配符路径，最终仍会委托到 DefaultResourceLoader#getResource(location)。看清 FileSystemXmlApplicationContext 的继承体系就可以明确，普通文件路径最后会走到 DefaultResourceLoader 中的实现。
 
-### 15-16 DefaultResourceLoader：判断路径类型并调用 getResourceByPath
+### 17-18 DefaultResourceLoader：判断路径类型并调用 getResourceByPath
 
 ```java
 /**
@@ -516,7 +528,7 @@ public Resource getResource(String location) {
 
 其中的 getResourceByPath(location) 方法的实现则是在 FileSystemXmlApplicationContext 中完成的。
 
-### 16-17 FileSystemXmlApplicationContext：普通路径变成 FileSystemResource
+### 18-19 FileSystemXmlApplicationContext：普通路径变成 FileSystemResource
 
 ```java
 /**
