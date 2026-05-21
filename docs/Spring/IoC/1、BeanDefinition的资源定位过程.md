@@ -44,6 +44,87 @@ XML <context:component-scan>
   -> 只在 Bean 创建阶段做依赖注入
 ```
 
+### ApplicationContext 决定第一入口，不决定全部来源
+
+本文导图从 `FileSystemXmlApplicationContext` 开始，是因为这篇文章选了一个 XML 容器作为例子：
+
+```text
+FileSystemXmlApplicationContext
+  -> refresh()
+  -> XmlBeanDefinitionReader
+  -> XML Resource
+```
+
+这只能说明：
+
+```text
+当前这个 ApplicationContext 的第一入口是 XML。
+```
+
+不能理解成：
+
+```text
+一个容器只能使用 XML。
+```
+
+更准确的模型是：
+
+```text
+ApplicationContext 类型决定“第一口从哪里开始加载”。
+refresh() 过程中，Spring 还可能继续发现其他 BeanDefinition 来源。
+```
+
+比如 XML 入口也可以继续触发注解扫描：
+
+```xml
+<context:component-scan base-package="com.xxx"/>
+```
+
+它的含义是：
+
+```text
+先通过 XML 进入
+  -> 解析到 <context:component-scan>
+  -> 扫描 @Controller / @Service / @Component
+  -> 注册这些类的 BeanDefinition
+```
+
+反过来，注解入口也可以引入 XML：
+
+```java
+@Configuration
+@ImportResource("classpath:spring-main.xml")
+public class WebConfig {
+}
+```
+
+它的含义是：
+
+```text
+先通过 @Configuration 进入
+  -> 解析到 @ImportResource
+  -> 再去读取 XML
+  -> XML 里的 <bean> / <import> / <context:component-scan> 继续注册 BeanDefinition
+```
+
+所以要分成两个问题看：
+
+```text
+问题 1：当前容器从哪里开始？
+  -> 由 ApplicationContext 类型和 contextConfigLocation 决定。
+
+问题 2：最终 BeanDefinition 来自哪里？
+  -> 由 refresh() 过程中遇到的 XML、注解扫描、@Bean、@ImportResource、@MapperScan 等共同决定。
+```
+
+读本文时，只需要记住：
+
+```text
+FileSystemXmlApplicationContext 只是 XML 入口的例子。
+它说明 XML Resource 怎么被定位出来。
+它不代表真实项目只能从 XML 产生 BeanDefinition。
+```
+
 结合 `biz` 项目看，它不是纯 XML，也不是纯注解，而是混合模式：
 
 ```text
