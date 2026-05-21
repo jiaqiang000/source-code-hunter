@@ -25,7 +25,14 @@ Spring IoC 可以先分成两大段：
 
 ## 完整生命周期地图
 
+> [!note] 地图边界
+> 这张地图以当前 `source-code-hunter/docs/Spring/IoC` 这组 XML 主线文档为骨架。
+> 注解、Java Config、`@MapperScan` 等入口也会形成 `BeanDefinition`，但具体解析入口不同；本文先把它们放在同一条 IoC 生命周期里理解。
+
 - `ApplicationContext.refresh()`
+  - `prepareRefresh()`
+    - 准备刷新状态、环境属性和容器 active 标记。
+    - 当前没有专门文档，先不链接。
   - `obtainFreshBeanFactory()`
     - 定位 BeanDefinition 资源：[[1、BeanDefinition的资源定位过程]]
       - 重点：从容器入口走到 XML 配置资源定位。
@@ -105,4 +112,3 @@ Spring IoC 可以先分成两大段：
   - `finishRefresh()`
     - 发布容器刷新完成事件。
     - 当前没有专门文档，先不链接。
-
