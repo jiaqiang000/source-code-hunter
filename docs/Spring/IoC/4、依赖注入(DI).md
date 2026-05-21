@@ -10,7 +10,369 @@ spring-beans https://github.com/AmyliaY/spring-beans-reading
 spring-context https://github.com/AmyliaY/spring-context-reading
 ）
 
+## 先建立边界：本篇讲 Bean 创建主流程，不只是 DI
+
+> [!note] 先把标题纠正一下
+> 原标题叫“依赖注入(DI)”，但本文实际覆盖的范围更大。
+> 它从 `getBean()` 开始，讲到 `createBean()`、`doCreateBean()`、实例化、属性填充、属性值解析、属性写入。
+> 所以更准确地说，本文是在讲“Bean 创建与依赖注入主流程”。
+
+前面 1、2、3 篇已经讲完：
+
+```text
+配置资源
+  -> 解析成 BeanDefinition
+    -> 注册进 DefaultListableBeanFactory.beanDefinitionMap
+```
+
+到这里为止，Spring 只是知道：
+
+```text
+有哪些 Bean
+每个 Bean 叫什么
+每个 Bean 应该用哪个 class 创建
+每个 Bean 有哪些属性值、构造参数、依赖关系
+```
+
+但是业务对象还没有真正创建出来。本文要回答的是：
+
+```text
+DefaultListableBeanFactory 里已经有 BeanDefinition 之后，
+Spring 怎么根据 BeanDefinition 创建真实 Java 对象，
+又怎么把依赖注入到这个对象里。
+```
+
+这里要分清 3 个位置：
+
+```text
+getBean()
+  -> 触发 Bean 创建，不等于真正注入发生点
+
+createBeanInstance()
+  -> 创建 Java 对象
+  -> 构造器注入会落在这一段
+
+populateBean()
+  -> 属性填充入口
+  -> XML <property>、autowire byName/byType、@Autowired/@Resource 字段或方法注入，都属于这一大阶段
+```
+
+本文原代码主要沿着 XML `<property>` 的属性注入主线展开。`@Autowired` / `@Resource` 会通过 `BeanPostProcessor` 参与 `populateBean()` 阶段，详细可以先放到 [[Spring Bean 创建：Autowired 依赖注入流程]] 和 [[BeanPostProcessor]] 里看。
+
+## 先看对象关系：DefaultListableBeanFactory 如何承担创建职责
+
+> [!note] 先分清谁负责什么
+> `ApplicationContext` 是外层上下文，`BeanFactory` 才是 Bean 创建和依赖注入的核心执行者。
+> 前面注册进去的 `BeanDefinition`，最终就是被 `DefaultListableBeanFactory` 拿来创建对象。
+
+```text
+[对象1] context = AbstractApplicationContext / ApplicationContext
+        关系：外层容器上下文
+        作用：refresh() 总流程里会触发非懒加载单例预实例化
+
+[对象2] beanFactory = DefaultListableBeanFactory 实例
+        它同时也是：
+        DefaultListableBeanFactory
+          extends AbstractAutowireCapableBeanFactory
+          extends AbstractBeanFactory
+          extends FactoryBeanRegistrySupport
+          extends DefaultSingletonBeanRegistry
+
+        关系：第 3 篇注册 BeanDefinition 的目标容器，也是本文创建 Bean 的核心对象
+        作用：
+          - AbstractBeanFactory 提供 getBean() / doGetBean()
+          - AbstractAutowireCapableBeanFactory 提供 createBean() / doCreateBean() / populateBean()
+          - DefaultSingletonBeanRegistry 提供 singletonObjects 等单例缓存
+
+[对象3] mbd = RootBeanDefinition
+        关系：由 beanName 从 beanFactory 中取出的合并后 BeanDefinition
+        作用：保存创建 Bean 需要的 class、scope、dependsOn、构造参数、PropertyValues 等信息
+
+[对象4] instanceWrapper = BeanWrapper / BeanWrapperImpl
+        关系：包住 createBeanInstance() 刚创建出来的 Java 对象
+        作用：后续通过它做类型转换、属性描述符解析、setter 调用和属性写入
+
+[对象5] pvs = PropertyValues / MutablePropertyValues
+        关系：来自 mbd.getPropertyValues()
+        作用：保存 BeanDefinition 中解析好的属性值，比如 RuntimeBeanReference、TypedStringValue、集合等
+
+[对象6] valueResolver = BeanDefinitionValueResolver
+        关系：applyPropertyValues() 中临时创建
+        作用：把 BeanDefinition 中的配置值解析成真实对象；遇到 RuntimeBeanReference 时会递归 getBean(refName)
+
+[对象7] instantiationStrategy = InstantiationStrategy
+        关系：由 beanFactory 持有
+        作用：真正用反射或 CGLIB 创建 Java 对象
+```
+
+一句话概括：
+
+```text
+ApplicationContext 负责启动流程。
+DefaultListableBeanFactory 负责拿 BeanDefinition 创建 Bean。
+RootBeanDefinition 是创建配方。
+BeanWrapper 包住真实对象并负责属性写入。
+BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
+```
+
+## 全局导图：从触发 getBean 到属性写入
+
+> [!note] 本篇只追一个问题
+> 已经注册好的 `BeanDefinition`，如何变成一个可用的 Bean。
+>
+> 这里会经过两层递归：
+> 1. `getBean(dependsOnBean)` 或 `getBean(refName)` 递归创建依赖 Bean。
+> 2. 集合、数组、Map 里的属性值会递归解析每一个元素。
+
+```text
+[00] Bean 创建触发入口
+     │
+     ├─ [00-A] 应用主动调用 beanFactory::getBean(...)
+     │        关系：外部主动取 Bean
+     │        作用：第一次取某个未创建 Bean 时触发创建
+     │
+     └─ [00-B] context::refresh()
+              方法定义在：AbstractApplicationContext
+              关系：容器启动流程
+              作用：容器启动时触发非懒加载单例预实例化
+              │
+              └─ context::finishBeanFactoryInitialization(beanFactory)
+                 方法定义在：AbstractApplicationContext
+                 作用：结束 BeanFactory 初始化，准备创建非懒加载单例
+                 │
+                 └─ beanFactory::preInstantiateSingletons()
+                    方法定义在：DefaultListableBeanFactory
+                    作用：遍历非懒加载单例 BeanDefinition
+                    │
+                    └─ beanFactory::getBean(beanName)
+                       关系：最终汇入 [01]
+
+[01] beanFactory::getBean(...)
+     方法定义在：AbstractBeanFactory
+     关系：[00-A] 和 [00-B] 最终都会汇入这里
+     作用：BeanFactory 对外取 Bean 的入口
+     │
+     └─ [02] beanFactory::doGetBean(...)
+        方法定义在：AbstractBeanFactory
+        作用：Bean 获取总控，决定返回缓存、委托父容器，还是创建新 Bean
+        │
+        ├─ [02.1] transformedBeanName(name)
+        │        作用：把别名转换成真正 beanName
+        │
+        ├─ [02.2] getSingleton(beanName)
+        │        作用：先查单例缓存；如果已经创建过，直接返回
+        │
+        ├─ [02.3] parentBeanFactory.getBean(...)
+        │        作用：当前容器没有 BeanDefinition 时，委托父容器查找
+        │
+        ├─ [02.4] getMergedLocalBeanDefinition(beanName)
+        │        作用：拿到 RootBeanDefinition，也就是创建 Bean 的配方
+        │
+        ├─ [02.5] dependsOn 依赖处理
+        │        作用：先递归 getBean(dependsOnBean)，保证 depends-on 指定的 Bean 先创建
+        │
+        └─ [02.6] 按 scope 创建 Bean
+           │
+           ├─ singleton -> getSingleton(beanName, ObjectFactory)
+           │               │
+           │               └─ createBean(beanName, mbd, args)
+           │
+           ├─ prototype -> createBean(beanName, mbd, args)
+           │
+           └─ request/session 等自定义 scope
+                           │
+                           └─ scope.get(... ObjectFactory ...)
+                              │
+                              └─ createBean(beanName, mbd, args)
+
+[03] beanFactory::createBean(...)
+     方法定义在：AbstractAutowireCapableBeanFactory
+     关系：由 doGetBean() 在需要创建对象时调用
+     作用：真正进入 Bean 创建
+     │
+     ├─ [03.1] resolveBeanClass(...)
+     │        作用：解析 Bean class
+     │
+     ├─ [03.2] resolveBeforeInstantiation(...)
+     │        作用：给 InstantiationAwareBeanPostProcessor 一个提前返回代理对象的机会
+     │
+     └─ [04] beanFactory::doCreateBean(...)
+        方法定义在：AbstractAutowireCapableBeanFactory
+        作用：单个 Bean 创建主流程
+        │
+        ├─ [04.1] createBeanInstance(...)
+        │        作用：实例化 Java 对象，返回 BeanWrapper
+        │        │
+        │        ├─ 工厂方法实例化
+        │        ├─ 构造器自动装配 / 构造器注入
+        │        └─ 默认无参构造器实例化
+        │
+        ├─ [04.2] applyMergedBeanDefinitionPostProcessors(...)
+        │        作用：合并后 BeanDefinition 后处理
+        │
+        ├─ [04.3] addSingletonFactory(...)
+        │        作用：提前暴露单例引用，处理循环依赖
+        │
+        ├─ [04.4] populateBean(...)
+        │        作用：属性填充 / 依赖注入
+        │        │
+        │        ├─ [04.4.1] mbd.getPropertyValues()
+        │        │        作用：拿到 BeanDefinition 中解析好的属性值
+        │        │
+        │        ├─ [04.4.2] InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
+        │        │        作用：属性填充前的拦截点
+        │        │
+        │        ├─ [04.4.3] autowireByName / autowireByType
+        │        │        作用：处理 XML autowire 模式
+        │        │
+        │        ├─ [04.4.4] InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
+        │        │        作用：注解注入参与点；@Autowired / @Resource 这类会在这里附近介入
+        │        │
+        │        └─ [04.4.5] applyPropertyValues(...)
+        │                 作用：解析属性值并准备写入对象
+        │                 │
+        │                 ├─ BeanDefinitionValueResolver.resolveValueIfNecessary(...)
+        │                 │        作用：把 RuntimeBeanReference、TypedStringValue、集合等配置值解析成真实对象
+        │                 │
+        │                 └─ BeanWrapper.setPropertyValues(...)
+        │                          作用：真正通过属性访问器 / setter 写入属性
+        │
+        ├─ [04.5] initializeBean(...)
+        │        作用：Aware、初始化方法、BeanPostProcessor 前后处理；本文只作为边界
+        │
+        └─ [04.6] registerDisposableBeanIfNecessary(...)
+                 作用：注册销毁逻辑
+```
+
 ## 正文
+
+### 00 Bean 创建的两个触发入口：主动 getBean 和预实例化
+
+> [!note] 为什么先看这一段
+> 本文后面大部分代码都从 `getBean()` 往下讲。
+> 但 `getBean()` 有两种常见触发来源：一种是应用主动调用，另一种是容器启动时预实例化非懒加载单例。
+> 所以后面看到 `getBean()` 时，要知道它既可以来自业务代码，也可以来自 `refresh()` 内部。
+
+最后看一下 lazy-init 触发的预实例化和依赖注入，发生在 IoC 容器完成对 BeanDefinition 的定位、载入、解析和注册之后。通过牺牲 IoC 容器初始化的性能，来有效提升应用第一次获取该 bean 的效率。
+lazy-init 实现的入口方法在我们前面解读过的 AbstractApplicationContext 的 refresh() 中，它是 IoC 容器正式启动的标志。
+
+> [!warning] 术语提醒
+> 更准确地说，这里讲的是“非懒加载单例预实例化”。
+> `lazy-init=false` 的单例 Bean 会在容器启动阶段被 `preInstantiateSingletons()` 提前创建；`lazy-init=true` 才会推迟到后续 `getBean()` 时创建。
+
+```java
+public abstract class AbstractApplicationContext extends DefaultResourceLoader
+		implements ConfigurableApplicationContext, DisposableBean {
+
+    /**
+     * 容器初始化的过程：
+     * 1、根据指定规则扫描指定目录，获取所有 用于配置bean的配置文件；
+     * 2、根据 Spring定义的规则，解析配置文件中的各个元素，将其封装成 IoC容器 可以装载的 BeanDefinition对象；
+     * 3、将封装好的 BeanDefinition 注册进 IoC容器。
+     *
+     * IoC容器的初始化 和 bean的依赖注入 是两个独立的过程，依赖注入一般发生在应用第一次通过 getBean()方法
+     * 从容器获取 bean 时。
+     * 另外需要注意的是，IoC容器 有一个预实例化的配置（即，将 <bean>元素 的 lazyInit属性 设为 false），
+     * 使该 <bean>元素对应的 bean可以提前实例化，而不用等到调用 getBean()方法 时才开始实例化。
+     */
+    public void refresh() throws BeansException, IllegalStateException {
+        synchronized (this.startupShutdownMonitor) {
+            // 调用容器准备刷新的方法，获取容器的当前时间，同时给容器设置同步标识
+            prepareRefresh();
+
+            // 告诉子类启动 refreshBeanFactory() 方法，BeanDefinition 资源文件的载入从子类的
+            // refreshBeanFactory() 方法启动开始
+            ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
+
+            // 为 BeanFactory 配置容器特性，例如类加载器、事件处理器等
+            prepareBeanFactory(beanFactory);
+
+            try {
+                // 为容器的某些子类指定特殊的 BeanPost 事件处理器
+                postProcessBeanFactory(beanFactory);
+
+                // 调用所有注册的 BeanFactoryPostProcessor
+                invokeBeanFactoryPostProcessors(beanFactory);
+
+                // 为 BeanFactory 注册 BeanPost 事件处理器.
+                // BeanPostProcessor 是 Bean 后置处理器，用于监听容器触发的事件
+                registerBeanPostProcessors(beanFactory);
+
+                // 初始化信息源，和国际化相关.
+                initMessageSource();
+
+                // 初始化容器事件传播器
+                initApplicationEventMulticaster();
+
+                // 调用子类的某些特殊 Bean 初始化方法
+                onRefresh();
+
+                // 为事件传播器注册事件监听器.
+                registerListeners();
+
+                /**
+                 * ！！！！！！！！！！！！！！！！！！！！！
+                 * 对配置了 lazy-init属性 为 false 的 bean 进行预实例化
+                 * ！！！！！！！！！！！！！！！！！！！！！
+                 */
+                finishBeanFactoryInitialization(beanFactory);
+
+                // 初始化容器的生命周期事件处理器，并发布容器的生命周期事件
+                finishRefresh();
+            }
+
+            catch (BeansException ex) {
+                // 销毁以创建的单态 Bean
+                destroyBeans();
+
+                // 取消 refresh 操作，重置容器的同步标识.
+                cancelRefresh(ex);
+
+                throw ex;
+            }
+        }
+    }
+
+    /**
+     * 对配置了 lazy-init属性 为 false 的 bean 进行预实例化
+     */
+    protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
+        // 这是 Spring3 以后新加的代码，为容器指定一个转换服务 (ConversionService)
+        // 在对某些 bean 属性进行转换时使用
+        if (beanFactory.containsBean(CONVERSION_SERVICE_BEAN_NAME) &&
+                beanFactory.isTypeMatch(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class)) {
+            beanFactory.setConversionService(
+                    /**
+                     * ！！！！！！！！！！！！！！！！！！！！
+                     * 在这里 通过调用 getBean()方法，触发依赖注入
+                     * ！！！！！！！！！！！！！！！！！！！！
+                     */
+                    beanFactory.getBean(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class));
+        }
+
+        String[] weaverAwareNames = beanFactory.getBeanNamesForType(LoadTimeWeaverAware.class, false, false);
+        for (String weaverAwareName : weaverAwareNames) {
+            getBean(weaverAwareName);
+        }
+
+        // 为了类型匹配，停止使用临时的类加载器
+        beanFactory.setTempClassLoader(null);
+
+        // 缓存容器中所有注册的 BeanDefinition 元数据，以防被修改
+        beanFactory.freezeConfiguration();
+
+        // 对配置了 lazy-init属性 为 false 的 单例bean 进行预实例化处理
+        beanFactory.preInstantiateSingletons();
+    }
+}
+```
+
+### 01-02 AbstractBeanFactory：getBean 最终进入 doGetBean
+
+> [!note] 阅读提示
+> 这段代码对应导图里的 [01] 和 [02]。
+> `getBean()` 是入口，`doGetBean()` 才是总控。
+> 真正创建对象时，`doGetBean()` 会继续调用 `createBean()`，进入后面的 [03]。
 
 首先看一下 AbstractBeanFactory 中的 getBean() 系列方法及 doGetBean() 具体实现。
 
@@ -214,6 +576,13 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 }
 ```
 
+### 03-04 AbstractAutowireCapableBeanFactory：createBean 进入 doCreateBean
+
+> [!note] 阅读提示
+> 这段代码对应导图里的 [03] 和 [04]。
+> `createBean()` 是进入创建的门面方法，`doCreateBean()` 才是单个 Bean 创建主流程。
+> 这里会串起实例化、循环依赖提前暴露、属性填充、初始化、销毁注册。
+
 总的来说，getBean() 方法是依赖注入的起点，之后会调用 createBean()，根据之前解析生成的 BeanDefinition 对象 生成 bean 对象，下面我们看看 AbstractBeanFactory 的子类 AbstractAutowireCapableBeanFactory 中对 createBean() 的具体实现。
 
 ```java
@@ -380,6 +749,13 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 }
 ```
 
+### 04.1 AbstractAutowireCapableBeanFactory：createBeanInstance 创建 Java 对象
+
+> [!note] 阅读提示
+> 这段代码对应导图里的 [04.1]。
+> 这里的核心问题是“对象怎么 new 出来”。
+> 构造器注入属于这一段；属性注入还没有发生。
+
 从源码中可以看到 createBeanInstance() 和 populateBean() 这两个方法与依赖注入的实现非常密切，createBeanInstance() 方法中生成了 bean 所包含的 Java 对象，populateBean() 方法对这些生成的 bean 对象之间的依赖关系进行了处理。下面我们先看一下 createBeanInstance() 方法的实现。
 
 ```java
@@ -465,6 +841,12 @@ protected BeanWrapper instantiateBean(final String beanName, final RootBeanDefin
     }
 }
 ```
+
+### 04.1.1 InstantiationStrategy：反射或 CGLIB 实例化对象
+
+> [!note] 阅读提示
+> 这段仍然属于导图里的 [04.1]。
+> `createBeanInstance()` 负责选择实例化路径，`InstantiationStrategy` 负责真正创建 Java 对象。
 
 从源码中我们可以看到其调用了 SimpleInstantiationStrategy 实现类来生成 bean 对象，这个类是 Spring 用来生成 bean 对象 的默认类，它提供了两种策略来实例化 bean 对象，一种是利用 Java 的反射机制，另一种是直接使用 CGLIB。
 
@@ -581,6 +963,14 @@ public class CglibSubclassingInstantiationStrategy extends SimpleInstantiationSt
     }
 }
 ```
+
+### 04.4-04.4.5 AbstractAutowireCapableBeanFactory：populateBean 到 applyPropertyValues
+
+> [!note] 阅读提示
+> 这段代码对应导图里的 [04.4] 到 [04.4.5]。
+> `populateBean()` 是属性填充入口。
+> `applyPropertyValues()` 是 XML `<property>` 这类属性值解析和写入前准备的主线。
+> `InstantiationAwareBeanPostProcessor` 也在这里附近介入，所以注解注入可以理解为落在 `populateBean()` 这一大阶段。
 
 至此，完成了 bean 对象 的实例化，然后就可以根据解析得到的 BeanDefinition 对象 完成对各个属性的赋值处理，也就是依赖注入。这个实现方法就是前面 AbstractAutowireCapableBeanFactory 类中的 populateBean() 方法。
 
@@ -799,6 +1189,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
     }
 }
 ```
+
+### 04.4.5.1 BeanDefinitionValueResolver：把配置值解析成真实对象
+
+> [!note] 阅读提示
+> 这段代码对应导图里 `applyPropertyValues()` 下面的 `BeanDefinitionValueResolver.resolveValueIfNecessary(...)`。
+> `RuntimeBeanReference` 在这里才会变成真实依赖对象；如果依赖对象还没创建，会递归调用 `getBean(refName)`。
 
 BeanDefinitionValueResolver 中解析属性值，对注入类型进行转换的具体实现。
 
@@ -1019,6 +1415,12 @@ class BeanDefinitionValueResolver {
     }
 }
 ```
+
+### 04.4.5.2 BeanWrapper：把解析后的值真正写入对象
+
+> [!note] 阅读提示
+> 这段代码对应导图里的 `BeanWrapper.setPropertyValues(...)`。
+> 前面已经把 `RuntimeBeanReference` 等配置值解析成真实对象；这里是 XML `<property>` 主线里真正通过属性访问器、setter 等方式写入对象的位置。
 
 至此，已经为依赖注入做好了准备，下面就该将 bean 对象 设置到它所依赖的另一个 bean 的属性中去。AbstractPropertyAccessor 和其子类 BeanWrapperImpl 完成了依赖注入的详细过程。先看一下 AbstractPropertyAccessor 中的实现。
 
@@ -1405,116 +1807,15 @@ public class BeanWrapperImpl extends AbstractPropertyAccessor implements BeanWra
 }
 ```
 
+### 这一篇最终要记住什么
+
 至此，完成了对 bean 的各种属性的依赖注入，在 bean 的实例化和依赖注入的过程中，需要依据 BeanDefinition 中的信息来递归地完成依赖注入。另外，在此过程中存在许多递归调用，一个递归是在上下文体系中查找 当前 bean 依赖的 bean 和创建 当前 bean 依赖的 bean 的递归调用；另一个是在依赖注入时，通过递归调用容器的 getBean() 方法，得到当前 bean 的依赖 bean，同时也触发对依赖 bean 的创建和注入；在对 bean 的属性进行依赖注入时，解析的过程也是递归的。这样，根据依赖关系，从最末层的依赖 bean 开始，一层一层地完成 bean 的创建和注入，直到最后完成当前 bean 的创建。
 
-## lazy-init 属性触发的依赖注入
-
-最后看一下 lazy-init 触发的预实例化和依赖注入，发生在 IoC 容器完成对 BeanDefinition 的定位、载入、解析和注册之后。通过牺牲 IoC 容器初始化的性能，来有效提升应用第一次获取该 bean 的效率。
-lazy-init 实现的入口方法在我们前面解读过的 AbstractApplicationContext 的 refresh() 中，它是 IoC 容器正式启动的标志。
-
-```java
-public abstract class AbstractApplicationContext extends DefaultResourceLoader
-		implements ConfigurableApplicationContext, DisposableBean {
-
-    /**
-     * 容器初始化的过程：
-     * 1、根据指定规则扫描指定目录，获取所有 用于配置bean的配置文件；
-     * 2、根据 Spring定义的规则，解析配置文件中的各个元素，将其封装成 IoC容器 可以装载的 BeanDefinition对象；
-     * 3、将封装好的 BeanDefinition 注册进 IoC容器。
-     *
-     * IoC容器的初始化 和 bean的依赖注入 是两个独立的过程，依赖注入一般发生在应用第一次通过 getBean()方法
-     * 从容器获取 bean 时。
-     * 另外需要注意的是，IoC容器 有一个预实例化的配置（即，将 <bean>元素 的 lazyInit属性 设为 false），
-     * 使该 <bean>元素对应的 bean可以提前实例化，而不用等到调用 getBean()方法 时才开始实例化。
-     */
-    public void refresh() throws BeansException, IllegalStateException {
-        synchronized (this.startupShutdownMonitor) {
-            // 调用容器准备刷新的方法，获取容器的当前时间，同时给容器设置同步标识
-            prepareRefresh();
-
-            // 告诉子类启动 refreshBeanFactory() 方法，BeanDefinition 资源文件的载入从子类的
-            // refreshBeanFactory() 方法启动开始
-            ConfigurableListableBeanFactory beanFactory = obtainFreshBeanFactory();
-
-            // 为 BeanFactory 配置容器特性，例如类加载器、事件处理器等
-            prepareBeanFactory(beanFactory);
-
-            try {
-                // 为容器的某些子类指定特殊的 BeanPost 事件处理器
-                postProcessBeanFactory(beanFactory);
-
-                // 调用所有注册的 BeanFactoryPostProcessor
-                invokeBeanFactoryPostProcessors(beanFactory);
-
-                // 为 BeanFactory 注册 BeanPost 事件处理器.
-                // BeanPostProcessor 是 Bean 后置处理器，用于监听容器触发的事件
-                registerBeanPostProcessors(beanFactory);
-
-                // 初始化信息源，和国际化相关.
-                initMessageSource();
-
-                // 初始化容器事件传播器
-                initApplicationEventMulticaster();
-
-                // 调用子类的某些特殊 Bean 初始化方法
-                onRefresh();
-
-                // 为事件传播器注册事件监听器.
-                registerListeners();
-
-                /**
-                 * ！！！！！！！！！！！！！！！！！！！！！
-                 * 对配置了 lazy-init属性 为 false 的 bean 进行预实例化
-                 * ！！！！！！！！！！！！！！！！！！！！！
-                 */
-                finishBeanFactoryInitialization(beanFactory);
-
-                // 初始化容器的生命周期事件处理器，并发布容器的生命周期事件
-                finishRefresh();
-            }
-
-            catch (BeansException ex) {
-                // 销毁以创建的单态 Bean
-                destroyBeans();
-
-                // 取消 refresh 操作，重置容器的同步标识.
-                cancelRefresh(ex);
-
-                throw ex;
-            }
-        }
-    }
-
-    /**
-     * 对配置了 lazy-init属性 为 false 的 bean 进行预实例化
-     */
-    protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
-        // 这是 Spring3 以后新加的代码，为容器指定一个转换服务 (ConversionService)
-        // 在对某些 bean 属性进行转换时使用
-        if (beanFactory.containsBean(CONVERSION_SERVICE_BEAN_NAME) &&
-                beanFactory.isTypeMatch(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class)) {
-            beanFactory.setConversionService(
-                    /**
-                     * ！！！！！！！！！！！！！！！！！！！！
-                     * 在这里 通过调用 getBean()方法，触发依赖注入
-                     * ！！！！！！！！！！！！！！！！！！！！
-                     */
-                    beanFactory.getBean(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class));
-        }
-
-        String[] weaverAwareNames = beanFactory.getBeanNamesForType(LoadTimeWeaverAware.class, false, false);
-        for (String weaverAwareName : weaverAwareNames) {
-            getBean(weaverAwareName);
-        }
-
-        // 为了类型匹配，停止使用临时的类加载器
-        beanFactory.setTempClassLoader(null);
-
-        // 缓存容器中所有注册的 BeanDefinition 元数据，以防被修改
-        beanFactory.freezeConfiguration();
-
-        // 对配置了 lazy-init属性 为 false 的 单例bean 进行预实例化处理
-        beanFactory.preInstantiateSingletons();
-    }
-}
-```
+> [!tip] 最小记忆链路
+> `getBean()` 只是触发入口。
+> `doGetBean()` 决定是否需要创建 Bean。
+> `doCreateBean()` 串起单个 Bean 的创建流程。
+> `createBeanInstance()` 负责实例化对象。
+> `populateBean()` 负责属性填充。
+> `BeanDefinitionValueResolver` 负责把配置值解析成真实依赖对象。
+> `BeanWrapper` 负责把解析后的值真正写入对象。
