@@ -13,9 +13,146 @@ spring-beans https://github.com/AmyliaY/spring-beans-reading
 spring-context https://github.com/AmyliaY/spring-context-reading  
 ）
 
+## 全局导图：类关系中的执行顺序
+
+> [!note] 本篇只追一个问题
+> `FileSystemXmlApplicationContext` 接收到 XML 配置路径之后，Spring 如何把这个路径定位成一个可以读取的 `Resource`。
+>
+> 这里还没有真正解析 `<bean>` 标签，也还没有创建业务 Bean。
+
+```text
+运行时先记住 3 个核心对象：
+
+[对象1] context = FileSystemXmlApplicationContext 实例
+        它同时也是：
+        FileSystemXmlApplicationContext
+          extends AbstractXmlApplicationContext
+          extends AbstractRefreshableConfigApplicationContext
+          extends AbstractRefreshableApplicationContext
+          extends AbstractApplicationContext
+          extends DefaultResourceLoader
+
+[对象2] beanFactory = DefaultListableBeanFactory 实例
+        后面用来保存 BeanDefinition
+
+[对象3] reader = XmlBeanDefinitionReader 实例
+        后面用来读取 XML，并把 BeanDefinition 注册到 beanFactory
+
+
+执行顺序：
+
+[01] context::FileSystemXmlApplicationContext(...)
+     方法所属：FileSystemXmlApplicationContext
+     关系：构造器
+     作用：接收 XML 配置路径
+     ↓
+
+[02] context::setConfigLocations(configLocations)
+     方法定义在：AbstractRefreshableConfigApplicationContext
+     关系：context 继承来的方法
+     作用：保存 XML 配置路径
+     ↓
+
+[03] context::refresh()
+     方法定义在：AbstractApplicationContext
+     关系：context 继承来的模板方法
+     作用：启动容器刷新流程
+     ↓
+
+[04] context::obtainFreshBeanFactory()
+     方法定义在：AbstractApplicationContext
+     关系：refresh() 内部调用
+     作用：准备拿到新的 BeanFactory
+     ↓
+
+[05] context::refreshBeanFactory()
+     方法实现来自：AbstractRefreshableApplicationContext
+     关系：父类模板流程调用到下层实现
+     作用：刷新内部 BeanFactory
+     ↓
+
+[06] beanFactory = new DefaultListableBeanFactory()
+     创建位置：AbstractRefreshableApplicationContext::refreshBeanFactory()
+     关系：创建新对象
+     作用：后面保存 BeanDefinition
+     ↓
+
+[07] context::loadBeanDefinitions(beanFactory)
+     方法实现来自：AbstractXmlApplicationContext
+     关系：refreshBeanFactory() 调用抽象方法，实际落到 XML 容器实现
+     作用：开始加载 XML 里的 BeanDefinition
+     ↓
+
+[08] reader = new XmlBeanDefinitionReader(beanFactory)
+     创建位置：AbstractXmlApplicationContext::loadBeanDefinitions(beanFactory)
+     关系：创建新对象
+     作用：reader 以后解析出的 BeanDefinition 会注册进 beanFactory
+     ↓
+
+[09] reader.setResourceLoader(context)
+     调用位置：AbstractXmlApplicationContext::loadBeanDefinitions(beanFactory)
+     关系：把 context 传给 reader
+     作用：reader 以后遇到配置路径时，让 context 帮它找 Resource
+     ↓
+
+[10] context::loadBeanDefinitions(reader)
+     方法定义在：AbstractXmlApplicationContext
+     关系：同一个类里的重载方法
+     作用：取出配置路径，交给 reader
+     ↓
+
+[11] reader::loadBeanDefinitions(configLocations)
+     方法定义在：AbstractBeanDefinitionReader
+     关系：XmlBeanDefinitionReader 继承来的方法
+     作用：遍历每个配置路径
+     ↓
+
+[12] reader::loadBeanDefinitions(location)
+     方法定义在：AbstractBeanDefinitionReader
+     关系：上一步遍历时调用
+     作用：处理单个配置路径
+     ↓
+
+[13] reader::loadBeanDefinitions(location, actualResources)
+     方法定义在：AbstractBeanDefinitionReader
+     关系：继续进入重载方法
+     作用：准备把 location 解析成 Resource
+     ↓
+
+[14] reader::getResourceLoader()
+     方法定义在：AbstractBeanDefinitionReader
+     关系：拿出第 [09] 步保存的 ResourceLoader
+     结果：拿到的是 context，也就是 FileSystemXmlApplicationContext 实例
+     ↓
+
+[15] context::getResource(location)
+     方法定义在：DefaultResourceLoader
+     关系：context 继承了 DefaultResourceLoader 的方法
+     作用：判断 location 是 classpath、URL，还是普通文件路径
+     ↓
+
+[16] context::getResourceByPath(location)
+     方法重写在：FileSystemXmlApplicationContext
+     关系：DefaultResourceLoader#getResource() 内部调用可重写方法，运行时落到子类实现
+     作用：普通文件路径交给 FileSystemXmlApplicationContext 处理
+     ↓
+
+[17] new FileSystemResource(path)
+     创建位置：FileSystemXmlApplicationContext::getResourceByPath(path)
+     作用：把 XML 配置路径包装成 Spring 的 Resource
+
+到这里，本篇结束：配置路径已经完成 Resource 定位。
+```
+
 ## 正文
 
 当我们传入一个 Spring 配置文件去实例化 FileSystemXmlApplicationContext 时，可以看一下它的构造方法都做了什么。
+
+### 01-03 FileSystemXmlApplicationContext：保存配置路径并触发 refresh
+
+> [!note] 阅读提示
+> 这个代码块末尾的 `getResourceByPath()` 对应导图里的 [16-17]，是资源定位的终点。
+> 第一次读这里时，先关注构造器里的 `setConfigLocations(configLocations)` 和 `refresh()`。
 
 ```java
 /**
@@ -74,6 +211,8 @@ protected Resource getResourceByPath(String path) {
 ```
 
 看看其父类 AbstractApplicationContext 实现的 refresh() 方法，该方法就是 IoC 容器初始化的入口类
+
+### 03-04 AbstractApplicationContext：refresh 进入容器刷新模板
 
 ```java
 /**
@@ -141,6 +280,8 @@ public void refresh() throws BeansException, IllegalStateException {
 
 看看 obtainFreshBeanFactory() 方法，该方法告诉了子类去刷新内部的 beanFactory
 
+### 04-05 AbstractApplicationContext：obtainFreshBeanFactory 推进到 refreshBeanFactory
+
 ```java
 /**
  * Tell the subclass to refresh the internal bean factory.
@@ -161,6 +302,8 @@ protected ConfigurableListableBeanFactory obtainFreshBeanFactory() {
 ```
 
 下面看一下 AbstractRefreshableApplicationContext 中对 refreshBeanFactory() 方法的实现。FileSystemXmlApplicationContext 从上层体系的各抽象类中继承了大量的方法实现，抽象类中抽取大量公共行为进行具体实现，留下 abstract 的个性化方法交给具体的子类实现，这是一个很好的 OOP 编程设计，我们在自己编码时也可以尝试这样设计自己的类图。理清 FileSystemXmlApplicationContext 的上层体系设计，就不易被各种设计模式搞晕咯。
+
+### 05-07 AbstractRefreshableApplicationContext：创建 BeanFactory 并加载 BeanDefinition
 
 ```java
 /**
@@ -195,6 +338,8 @@ protected final void refreshBeanFactory() throws BeansException {
 
 AbstractXmlApplicationContext 中对 loadBeanDefinitions(DefaultListableBeanFactory beanFactory) 的实现。
 
+### 07-10 AbstractXmlApplicationContext：创建 reader 并把 context 交给 reader
+
 ```java
 /*
  * 实现了基类 AbstractRefreshableApplicationContext 的抽象方法
@@ -223,6 +368,8 @@ protected void loadBeanDefinitions(DefaultListableBeanFactory beanFactory) throw
 ```
 
 继续看 AbstractXmlApplicationContext 中 loadBeanDefinitions() 的重载方法。
+
+### 10-11 AbstractXmlApplicationContext：取出配置路径交给 reader
 
 ```java
 /**
@@ -254,6 +401,8 @@ protected void loadBeanDefinitions(XmlBeanDefinitionReader reader) throws BeansE
 ```
 
 AbstractBeanDefinitionReader 中对 loadBeanDefinitions 方法的各种重载及调用。
+
+### 11-15 AbstractBeanDefinitionReader：从 location 找到 ResourceLoader
 
 ```java
 /**
@@ -336,6 +485,8 @@ public int loadBeanDefinitions(String location, Set<Resource> actualResources) t
 
 resourceLoader 的 getResource() 方法有多种实现，看清 FileSystemXmlApplicationContext 的继承体系就可以明确，其走的是 DefaultResourceLoader 中的实现。
 
+### 15-16 DefaultResourceLoader：判断路径类型并调用 getResourceByPath
+
 ```java
 /**
  * 获取 Resource 的具体实现方法
@@ -364,6 +515,8 @@ public Resource getResource(String location) {
 ```
 
 其中的 getResourceByPath(location) 方法的实现则是在 FileSystemXmlApplicationContext 中完成的。
+
+### 16-17 FileSystemXmlApplicationContext：普通路径变成 FileSystemResource
 
 ```java
 /**
