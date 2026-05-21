@@ -130,118 +130,114 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
      ├─ [00-A] 应用主动调用 beanFactory::getBean(...)
      │        关系：外部主动取 Bean
      │        作用：第一次取某个未创建 Bean 时触发创建
+     │        │
+     │        └─ 进入 [01]
      │
-     └─ [00-B] context::refresh()
-              方法定义在：AbstractApplicationContext
-              关系：容器启动流程
-              作用：容器启动时触发非懒加载单例预实例化
-              │
-              └─ context::finishBeanFactoryInitialization(beanFactory)
-                 方法定义在：AbstractApplicationContext
-                 作用：结束 BeanFactory 初始化，准备创建非懒加载单例
-                 │
-                 └─ beanFactory::preInstantiateSingletons()
-                    方法定义在：DefaultListableBeanFactory
-                    作用：遍历非懒加载单例 BeanDefinition
-                    │
-                    └─ beanFactory::getBean(beanName)
-                       关系：最终汇入 [01]
-
-[01] beanFactory::getBean(...)
-     方法定义在：AbstractBeanFactory
-     关系：[00-A] 和 [00-B] 最终都会汇入这里
-     作用：BeanFactory 对外取 Bean 的入口
+     ├─ [00-B] context::refresh()
+     │        方法定义在：AbstractApplicationContext
+     │        关系：容器启动流程
+     │        作用：容器启动时触发非懒加载单例预实例化
+     │        │
+     │        └─ context::finishBeanFactoryInitialization(beanFactory)
+     │           方法定义在：AbstractApplicationContext
+     │           作用：结束 BeanFactory 初始化，准备创建非懒加载单例
+     │           │
+     │           └─ beanFactory::preInstantiateSingletons()
+     │              方法定义在：DefaultListableBeanFactory
+     │              作用：遍历非懒加载单例 BeanDefinition
+     │              │
+     │              └─ beanFactory::getBean(beanName)
+     │                 关系：进入 [01]
      │
-     └─ [02] beanFactory::doGetBean(...)
+     └─ [01] beanFactory::getBean(...)
         方法定义在：AbstractBeanFactory
-        作用：Bean 获取总控，决定返回缓存、委托父容器，还是创建新 Bean
+        关系：[00-A] 和 [00-B] 最终都会汇入这里
+        作用：BeanFactory 对外取 Bean 的入口
         │
-        ├─ [02.1] transformedBeanName(name)
-        │        作用：把别名转换成真正 beanName
-        │
-        ├─ [02.2] getSingleton(beanName)
-        │        作用：先查单例缓存；如果已经创建过，直接返回
-        │
-        ├─ [02.3] parentBeanFactory.getBean(...)
-        │        作用：当前容器没有 BeanDefinition 时，委托父容器查找
-        │
-        ├─ [02.4] getMergedLocalBeanDefinition(beanName)
-        │        作用：拿到 RootBeanDefinition，也就是创建 Bean 的配方
-        │
-        ├─ [02.5] dependsOn 依赖处理
-        │        作用：先递归 getBean(dependsOnBean)，保证 depends-on 指定的 Bean 先创建
-        │
-        └─ [02.6] 按 scope 创建 Bean
+        └─ [02] beanFactory::doGetBean(...)
+           方法定义在：AbstractBeanFactory
+           作用：Bean 获取总控，决定返回缓存、委托父容器，还是创建新 Bean
            │
-           ├─ singleton -> getSingleton(beanName, ObjectFactory)
-           │               │
-           │               └─ createBean(beanName, mbd, args)
+           ├─ [02.1] transformedBeanName(name)
+           │        作用：把别名转换成真正 beanName
            │
-           ├─ prototype -> createBean(beanName, mbd, args)
+           ├─ [02.2] getSingleton(beanName)
+           │        作用：先查单例缓存；如果已经创建过，直接返回
            │
-           └─ request/session 等自定义 scope
-                           │
-                           └─ scope.get(... ObjectFactory ...)
-                              │
-                              └─ createBean(beanName, mbd, args)
-
-[03] beanFactory::createBean(...)
-     方法定义在：AbstractAutowireCapableBeanFactory
-     关系：由 doGetBean() 在需要创建对象时调用
-     作用：真正进入 Bean 创建
-     │
-     ├─ [03.1] resolveBeanClass(...)
-     │        作用：解析 Bean class
-     │
-     ├─ [03.2] resolveBeforeInstantiation(...)
-     │        作用：给 InstantiationAwareBeanPostProcessor 一个提前返回代理对象的机会
-     │
-     └─ [04] beanFactory::doCreateBean(...)
-        方法定义在：AbstractAutowireCapableBeanFactory
-        作用：单个 Bean 创建主流程
-        │
-        ├─ [04.1] createBeanInstance(...)
-        │        作用：实例化 Java 对象，返回 BeanWrapper
-        │        │
-        │        ├─ 工厂方法实例化
-        │        ├─ 构造器自动装配 / 构造器注入
-        │        └─ 默认无参构造器实例化
-        │
-        ├─ [04.2] applyMergedBeanDefinitionPostProcessors(...)
-        │        作用：合并后 BeanDefinition 后处理
-        │
-        ├─ [04.3] addSingletonFactory(...)
-        │        作用：提前暴露单例引用，处理循环依赖
-        │
-        ├─ [04.4] populateBean(...)
-        │        作用：属性填充 / 依赖注入
-        │        │
-        │        ├─ [04.4.1] mbd.getPropertyValues()
-        │        │        作用：拿到 BeanDefinition 中解析好的属性值
-        │        │
-        │        ├─ [04.4.2] InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
-        │        │        作用：属性填充前的拦截点
-        │        │
-        │        ├─ [04.4.3] autowireByName / autowireByType
-        │        │        作用：处理 XML autowire 模式
-        │        │
-        │        ├─ [04.4.4] InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
-        │        │        作用：注解注入参与点；@Autowired / @Resource 这类会在这里附近介入
-        │        │
-        │        └─ [04.4.5] applyPropertyValues(...)
-        │                 作用：解析属性值并准备写入对象
-        │                 │
-        │                 ├─ BeanDefinitionValueResolver.resolveValueIfNecessary(...)
-        │                 │        作用：把 RuntimeBeanReference、TypedStringValue、集合等配置值解析成真实对象
-        │                 │
-        │                 └─ BeanWrapper.setPropertyValues(...)
-        │                          作用：真正通过属性访问器 / setter 写入属性
-        │
-        ├─ [04.5] initializeBean(...)
-        │        作用：Aware、初始化方法、BeanPostProcessor 前后处理；本文只作为边界
-        │
-        └─ [04.6] registerDisposableBeanIfNecessary(...)
-                 作用：注册销毁逻辑
+           ├─ [02.3] parentBeanFactory.getBean(...)
+           │        作用：当前容器没有 BeanDefinition 时，委托父容器查找
+           │
+           ├─ [02.4] getMergedLocalBeanDefinition(beanName)
+           │        作用：拿到 RootBeanDefinition，也就是创建 Bean 的配方
+           │
+           ├─ [02.5] dependsOn 依赖处理
+           │        作用：先递归 getBean(dependsOnBean)，保证 depends-on 指定的 Bean 先创建
+           │
+           └─ [02.6] 按 scope 创建 Bean
+              │
+              ├─ singleton -> getSingleton(beanName, ObjectFactory)
+              ├─ prototype -> 直接创建
+              └─ request/session 等自定义 scope -> scope.get(... ObjectFactory ...)
+              │
+              └─ 上面需要创建新对象的分支，最终都会调用：
+                 │
+                 └─ [03] beanFactory::createBean(...)
+                    方法定义在：AbstractAutowireCapableBeanFactory
+                    关系：由 doGetBean() 在需要创建对象时调用
+                    作用：真正进入 Bean 创建
+                    │
+                    ├─ [03.1] resolveBeanClass(...)
+                    │        作用：解析 Bean class
+                    │
+                    ├─ [03.2] resolveBeforeInstantiation(...)
+                    │        作用：给 InstantiationAwareBeanPostProcessor 一个提前返回代理对象的机会
+                    │
+                    └─ [04] beanFactory::doCreateBean(...)
+                       方法定义在：AbstractAutowireCapableBeanFactory
+                       作用：单个 Bean 创建主流程
+                       │
+                       ├─ [04.1] createBeanInstance(...)
+                       │        作用：实例化 Java 对象，返回 BeanWrapper
+                       │        │
+                       │        ├─ 工厂方法实例化
+                       │        ├─ 构造器自动装配 / 构造器注入
+                       │        └─ 默认无参构造器实例化
+                       │
+                       ├─ [04.2] applyMergedBeanDefinitionPostProcessors(...)
+                       │        作用：合并后 BeanDefinition 后处理
+                       │
+                       ├─ [04.3] addSingletonFactory(...)
+                       │        作用：提前暴露单例引用，处理循环依赖
+                       │
+                       ├─ [04.4] populateBean(...)
+                       │        作用：属性填充 / 依赖注入
+                       │        │
+                       │        ├─ [04.4.1] mbd.getPropertyValues()
+                       │        │        作用：拿到 BeanDefinition 中解析好的属性值
+                       │        │
+                       │        ├─ [04.4.2] InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
+                       │        │        作用：属性填充前的拦截点
+                       │        │
+                       │        ├─ [04.4.3] autowireByName / autowireByType
+                       │        │        作用：处理 XML autowire 模式
+                       │        │
+                       │        ├─ [04.4.4] InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
+                       │        │        作用：注解注入参与点；@Autowired / @Resource 这类会在这里附近介入
+                       │        │
+                       │        └─ [04.4.5] applyPropertyValues(...)
+                       │                 作用：解析属性值并准备写入对象
+                       │                 │
+                       │                 ├─ BeanDefinitionValueResolver.resolveValueIfNecessary(...)
+                       │                 │        作用：把 RuntimeBeanReference、TypedStringValue、集合等配置值解析成真实对象
+                       │                 │
+                       │                 └─ BeanWrapper.setPropertyValues(...)
+                       │                          作用：真正通过属性访问器 / setter 写入属性
+                       │
+                       ├─ [04.5] initializeBean(...)
+                       │        作用：Aware、初始化方法、BeanPostProcessor 前后处理；本文只作为边界
+                       │
+                       └─ [04.6] registerDisposableBeanIfNecessary(...)
+                                作用：注册销毁逻辑
 ```
 
 ## 正文
