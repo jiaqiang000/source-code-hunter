@@ -184,6 +184,10 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
            ├─ [02.5] dependsOn 依赖处理
            │        作用：先递归 getBean(dependsOnBean)，保证 depends-on 指定的 Bean 先创建
            │        边界：这是创建顺序依赖，不等于把 dependsOnBean 注入到当前 Bean 属性里
+           │        注意：这不是面试里常说的三级缓存循环依赖主线
+           │        区分：
+           │          - depends-on：发生在 doGetBean() 早期，表达“创建当前 Bean 前，先创建谁”
+           │          - 属性注入循环依赖：发生在 populateBean() 阶段，表达“A 真的持有 B，B 又真的持有 A”
            │        项目例子：
            │          - `@DependsOn("webInfo")` / `depends-on="webInfo"` 表示当前 Bean 创建前，先创建 `webInfo`
            │          - 你的项目里 `webInfo` 会把配置值写入 `WebInfo.env`、`WebInfo.serverName` 等静态状态
@@ -531,6 +535,8 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                 //
                 // 注意：这一步只保证创建顺序，不会把 beanB 自动赋值给 beanA 的字段。
                 // 真正把 B 注入到 A.b，要看 constructor-arg、property ref、@Autowired、@Resource 等。
+                // 这也不是面试里常说的三级缓存循环依赖主线；三级缓存主线发生在 populateBean()
+                // 属性填充阶段，A.b -> B、B.a -> A 这种真实对象引用闭环会递归 getBean(refName)。
                 //
                 // 项目例子：@DependsOn("webInfo") / depends-on="webInfo"
                 // 表示当前 Bean 创建前先创建 webInfo，让 WebInfo.env、WebInfo.serverName 等静态状态
