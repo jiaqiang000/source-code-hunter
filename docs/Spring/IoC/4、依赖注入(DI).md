@@ -269,6 +269,185 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                                 作用：注册销毁逻辑
 ```
 
+## 两条路径：普通依赖和循环依赖怎么走这篇代码
+
+这里不是要重讲循环依赖细节，而是告诉你读 `4、依赖注入(DI)` 这篇时，普通依赖和循环依赖分别会经过哪些代码节点。
+
+它应该作为“读正文前的路线图”，放在全局导图后面最顺。
+
+### 非循环依赖：A 依赖 B，B 创建完成后再注入给 A
+
+普通依赖的路径可以这样看：
+
+```text
+getBean("a")
+  -> doGetBean("a")
+    -> createBean("a")
+      -> doCreateBean("a")
+        -> createBeanInstance("a")
+           作用：先把 A 这个 Java 对象创建出来
+
+        -> addSingletonFactory("a", ...)
+           作用：单例 Bean 会有提前暴露入口
+           注意：非循环依赖场景下，通常不会真的用到这个提前引用
+
+        -> populateBean("a")
+           作用：开始给 A 填充属性
+
+           A 需要 B
+             -> BeanDefinitionValueResolver.resolveReference(...)
+                作用：解析 A 的属性值里引用的 B
+
+             -> getBean("b")
+                作用：递归创建 B
+
+                -> doGetBean("b")
+                  -> createBean("b")
+                    -> doCreateBean("b")
+                      -> createBeanInstance("b")
+                      -> populateBean("b")
+                      -> initializeBean("b")
+                      -> addSingleton("b")
+
+             -> B 创建完成，返回给 A
+
+        -> BeanWrapper.setPropertyValues(...)
+           作用：把 B 真正写入 A 的属性里
+
+        -> initializeBean("a")
+        -> addSingleton("a")
+```
+
+所以非循环依赖的直觉是：
+
+```text
+A 创建到一半，发现需要 B
+  -> 先把 B 完整创建出来
+  -> 再把 B 注入给 A
+  -> 最后 A 自己继续完成初始化
+```
+
+这里虽然也可能经过 `addSingletonFactory("a", ...)`，但因为 B 不会回头找 A，所以这个提前暴露入口通常只是经过，没有真正发挥作用。
+
+### 循环依赖：A 先提前暴露，B 回头拿到 A 的早期引用
+
+循环依赖的路径可以这样看：
+
+```text
+getBean("a")
+  -> doGetBean("a")
+    -> createBean("a")
+      -> doCreateBean("a")
+        -> createBeanInstance("a")
+           作用：A 先被 new 出来，但还没有完成属性注入和初始化
+
+        -> addSingletonFactory("a", ...)
+           作用：把 A 的早期引用工厂放进三级缓存
+           注意：这里不是把完整 A 放进去，而是放一个 ObjectFactory
+
+        -> populateBean("a")
+           作用：开始给 A 填充属性
+
+           A 需要 B
+             -> resolveReference("b")
+             -> getBean("b")
+
+                -> doCreateBean("b")
+                  -> createBeanInstance("b")
+                     作用：B 也先被 new 出来
+
+                  -> addSingletonFactory("b", ...)
+
+                  -> populateBean("b")
+                     B 需要 A
+                       -> resolveReference("a")
+                       -> getBean("a")
+
+                          -> getSingleton("a")
+                             作用：发现 A 正在创建中
+
+                             singletonObjects 里没有完整 A
+                             earlySingletonObjects 里也没有 A
+                             singletonFactories 里有 A 的 ObjectFactory
+
+                             -> singletonFactory.getObject()
+                                作用：拿到 A 的早期引用
+
+                             -> earlySingletonObjects.put("a", earlyA)
+                             -> singletonFactories.remove("a")
+
+                       -> 把 earlyA 注入给 B
+
+                  -> initializeBean("b")
+                  -> addSingleton("b")
+
+           B 创建完成，返回给 A
+
+        -> 把 B 注入给 A
+        -> initializeBean("a")
+        -> addSingleton("a")
+```
+
+所以循环依赖的直觉是：
+
+```text
+A 创建到一半，发现需要 B
+  -> 去创建 B
+  -> B 创建到一半，又发现需要 A
+  -> 因为 A 已经实例化，只是还没完全初始化，所以 Spring 把 A 的早期引用先给 B
+  -> B 完成后再回到 A
+  -> A 拿到 B 后继续完成自己
+```
+
+关键分叉点不是 `populateBean()` 本身，而是：
+
+```text
+B 在 populateBean() 解析 A 依赖时，
+再次调用 getBean("a")，
+而此时 A 正处于创建中。
+```
+
+这时 `getSingleton("a")` 才会从三级缓存体系里拿早期引用。
+
+### 和后面《循环依赖》专题的关系
+
+当前这篇 `4、依赖注入(DI)` 主要负责把 Bean 创建主流程串起来：
+
+```text
+getBean()
+  -> doGetBean()
+    -> createBean()
+      -> doCreateBean()
+        -> createBeanInstance()
+        -> populateBean()
+        -> initializeBean()
+```
+
+后面的 [[循环依赖]] 专题，不是另一条完全独立的流程，而是在这条主流程中展开几个关键点：
+
+```text
+addSingletonFactory(...)
+  -> 为什么要提前暴露
+
+getSingleton(...)
+  -> 三级缓存怎么查
+
+populateBean(...)
+  -> A 依赖 B，B 又依赖 A 时，递归 getBean 怎么发生
+
+earlySingletonObjects / singletonFactories / singletonObjects
+  -> 早期引用、完整单例、ObjectFactory 分别解决什么问题
+```
+
+所以读法应该是：
+
+```text
+先用本文理解 Bean 创建主流程
+再用循环依赖专题理解主流程中的特殊分叉
+```
+
+如果不先知道 `doCreateBean()` 里面有 `createBeanInstance()`、`addSingletonFactory()`、`populateBean()`，直接看循环依赖就会觉得三级缓存是孤立知识点。
+
 ## 正文
 
 ### 00 Bean 创建的两个触发入口：主动 getBean 和预实例化
