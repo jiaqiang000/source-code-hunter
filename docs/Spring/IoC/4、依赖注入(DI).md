@@ -628,6 +628,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
         try {
             // 如果 bean 配置了后置处理器 PostProcessor，则这里返回一个 proxy 代理对象
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：这里对应导图 03.2，resolveBeforeInstantiation 具体展开
+             * 专题标记：BeanPostProcessor / AOP 提前代理入口
+             * ！！！！！！！！！！！！！
+             */
             Object bean = resolveBeforeInstantiation(beanName, mbd);
             if (bean != null) {
                 return bean;
@@ -639,6 +645,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         }
 
         // 创建 bean 实例对象的具体实现
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 04，doCreateBean 具体展开
+         * 后面的 04.1、04.2、04.3、04.4、04.5、04.6 都在这个方法里展开
+         * ！！！！！！！！！！！！！
+         */
         Object beanInstance = doCreateBean(beanName, mbd, args);
         if (logger.isDebugEnabled()) {
             logger.debug("Finished creating instance of bean '" + beanName + "'");
@@ -659,7 +671,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         if (instanceWrapper == null) {
             /**
              * ！！！！！！！！！！！！！
-             * 创建实例对象
+             * 阅读标注：这里对应后面 04.1，createBeanInstance 具体展开
+             * 04.1.1 InstantiationStrategy 继续展开真正的反射 / CGLIB 实例化
              * ！！！！！！！！！！！！！
              */
             instanceWrapper = createBeanInstance(beanName, mbd, args);
@@ -672,6 +685,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         // 调用 PostProcessor 后置处理器
         synchronized (mbd.postProcessingLock) {
             if (!mbd.postProcessed) {
+                /**
+                 * ！！！！！！！！！！！！！
+                 * 阅读标注：这里对应导图 04.2，applyMergedBeanDefinitionPostProcessors 具体展开
+                 * 专题标记：BeanPostProcessor 处理合并后的 BeanDefinition 信息
+                 * ！！！！！！！！！！！！！
+                 */
                 applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
                 mbd.postProcessed = true;
             }
@@ -686,6 +705,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
                         "' to allow for resolving potential circular references");
             }
             // 这里是一个 ObjectFactory 的匿名内部类，为了防止循环引用，尽早持有对象的引用
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：这里对应导图 04.3，addSingletonFactory 具体展开
+             * 专题标记：循环依赖提前暴露入口；AOP 场景还会走 getEarlyBeanReference
+             * ！！！！！！！！！！！！！
+             */
             addSingletonFactory(beanName, new ObjectFactory<Object>() {
                 public Object getObject() throws BeansException {
                     return getEarlyBeanReference(beanName, mbd, bean);
@@ -699,12 +724,19 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         try {
             /**
              * ！！！！！！！！！！！！！！！！！！！！！！！！！！！
-             * 把生成的 bean对象 的依赖关系设置好，完成整个依赖注入过程
+             * 阅读标注：这里对应后面 04.4，populateBean 具体展开
+             * 04.4-04.4.5 会继续展开属性填充、属性值解析和写入
              * ！！！！！！！！！！！！！！！！！！！！！！！！！！！
              */
             populateBean(beanName, mbd, instanceWrapper);
             if (exposedObject != null) {
                 // 初始化 bean对象
+                /**
+                 * ！！！！！！！！！！！！！
+                 * 阅读标注：这里对应导图 04.5，initializeBean 具体展开
+                 * 专题标记：BeanPostProcessor 初始化前后处理、AOP 代理常在这一带出现
+                 * ！！！！！！！！！！！！！
+                 */
                 exposedObject = initializeBean(beanName, exposedObject, mbd);
             }
         }
@@ -719,6 +751,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
         if (earlySingletonExposure) {
             // 获取指定名称的已注册的 单例bean对象
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：这里对应循环依赖专题中的 getSingleton 回收检查
+             * 作用：确认是否已经有人提前拿过当前 Bean 的早期引用
+             * ！！！！！！！！！！！！！
+             */
             Object earlySingletonReference = getSingleton(beanName, false);
             if (earlySingletonReference != null) {
                 // 如果根据名称获取的已注册的 bean 和正在实例化的 bean 是同一个
@@ -752,6 +790,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
         try {
             // 注册 成完依赖注入的bean
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：这里对应导图 04.6，registerDisposableBeanIfNecessary 具体展开
+             * 作用：注册销毁逻辑，不属于依赖注入主线
+             * ！！！！！！！！！！！！！
+             */
             registerDisposableBeanIfNecessary(beanName, bean, mbd);
         }
         catch (BeanDefinitionValidationException ex) {
