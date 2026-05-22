@@ -17,6 +17,178 @@ public interface BeanPostProcessor {
 }
 ```
 
+## 先区分：狭义 BeanPostProcessor 和广义 BeanPostProcessor 体系
+
+> [!note] 先把名字拆开
+> 狭义的 `BeanPostProcessor` 就是上面这个接口，核心只有初始化前后两个方法。
+> 但是 Spring 里常说的 BeanPostProcessor，很多时候指的是一整套后处理器体系。
+> 这套体系里有很多子接口，所以它们能插入 Bean 创建的不同阶段。
+
+狭义 `BeanPostProcessor` 只对应：
+
+```text
+initializeBean()
+  -> postProcessBeforeInitialization(...)
+  -> invokeInitMethods(...)
+  -> postProcessAfterInitialization(...)
+```
+
+也就是说，如果一个类只是：
+
+```java
+public class MyProcessor implements BeanPostProcessor {
+}
+```
+
+那它稳定参与的是初始化前后：
+
+```text
+postProcessBeforeInitialization(...)
+postProcessAfterInitialization(...)
+```
+
+它不会自动进入 `populateBean()` 的 `postProcessProperties(...)`，也不会自动参与构造器选择。
+
+如果要进入更早的阶段，需要实现更具体的子接口。常见关系可以先这样记：
+
+```text
+BeanPostProcessor
+  -> postProcessBeforeInitialization(...)
+  -> postProcessAfterInitialization(...)
+
+InstantiationAwareBeanPostProcessor
+  extends BeanPostProcessor
+  -> postProcessAfterInstantiation(...)
+  -> postProcessProperties(...) / postProcessPropertyValues(...)
+
+SmartInstantiationAwareBeanPostProcessor
+  extends InstantiationAwareBeanPostProcessor
+  -> determineCandidateConstructors(...)
+  -> getEarlyBeanReference(...)
+
+MergedBeanDefinitionPostProcessor
+  extends BeanPostProcessor
+  -> postProcessMergedBeanDefinition(...)
+```
+
+所以同样叫 `BeanPostProcessor`，位置可能完全不同：
+
+```text
+createBeanInstance()
+  -> SmartInstantiationAwareBeanPostProcessor.determineCandidateConstructors(...)
+
+doCreateBean()
+  -> MergedBeanDefinitionPostProcessor.postProcessMergedBeanDefinition(...)
+
+populateBean()
+  -> InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
+  -> InstantiationAwareBeanPostProcessor.postProcessProperties(...)
+
+initializeBean()
+  -> BeanPostProcessor.postProcessBeforeInitialization(...)
+  -> BeanPostProcessor.postProcessAfterInitialization(...)
+```
+
+## 为什么实现子接口后就能在对应阶段运行
+
+不是接口继承本身有魔法，而是 Spring 源码在不同阶段显式遍历处理器列表，并用 `instanceof` 判断它有没有实现某个更具体的接口。
+
+比如属性填充阶段大概就是这种逻辑：
+
+```java
+for (BeanPostProcessor bp : getBeanPostProcessors()) {
+    if (bp instanceof InstantiationAwareBeanPostProcessor) {
+        InstantiationAwareBeanPostProcessor ibp =
+                (InstantiationAwareBeanPostProcessor) bp;
+
+        ibp.postProcessAfterInstantiation(bean, beanName);
+    }
+}
+```
+
+所以真正的过程是：
+
+```text
+1. Spring 先把所有 BeanPostProcessor 注册到 BeanFactory。
+2. 后面创建普通 Bean 时，Spring 走到某个生命周期阶段。
+3. Spring 遍历这批 BeanPostProcessor。
+4. 如果当前处理器实现了某个子接口，就调用这个子接口对应的方法。
+```
+
+## 多个 BeanPostProcessor 会怎么处理
+
+可以有多个类实现 `BeanPostProcessor`，也可以有多个类实现 `InstantiationAwareBeanPostProcessor`。
+
+Spring 注册时会先找出所有实现 `BeanPostProcessor` 的 Bean：
+
+```java
+String[] postProcessorNames =
+        beanFactory.getBeanNamesForType(BeanPostProcessor.class, true, false);
+```
+
+然后按顺序分组：
+
+```text
+PriorityOrdered
+  -> Ordered
+    -> 普通 BeanPostProcessor
+```
+
+后面每创建一个普通 Bean，都会按注册顺序遍历这批处理器。
+
+如果有两个普通处理器：
+
+```java
+public class AProcessor implements BeanPostProcessor {}
+public class BProcessor implements BeanPostProcessor {}
+```
+
+那么初始化阶段大致是：
+
+```text
+AProcessor.postProcessBeforeInitialization(...)
+BProcessor.postProcessBeforeInitialization(...)
+invokeInitMethods(...)
+AProcessor.postProcessAfterInitialization(...)
+BProcessor.postProcessAfterInitialization(...)
+```
+
+如果有两个 `InstantiationAwareBeanPostProcessor`：
+
+```java
+public class CProcessor implements InstantiationAwareBeanPostProcessor {}
+public class DProcessor implements InstantiationAwareBeanPostProcessor {}
+```
+
+那么属性填充阶段会额外经过：
+
+```text
+CProcessor.postProcessAfterInstantiation(...)
+DProcessor.postProcessAfterInstantiation(...)
+
+CProcessor.postProcessProperties(...)
+DProcessor.postProcessProperties(...)
+```
+
+这里有两个细节：
+
+```text
+postProcessAfterInstantiation(...)
+  如果某个处理器返回 false，Spring 可能直接停止后续属性填充。
+
+postProcessProperties(...)
+  是链式处理，前一个处理器返回的 PropertyValues 会继续传给后一个处理器。
+```
+
+所以可以这样总结：
+
+> [!summary] 最终理解
+> `BeanPostProcessor` 狭义上只有初始化前后两个方法。
+> 
+> 但 Spring 的 BeanPostProcessor 体系有很多子接口。Spring 在不同生命周期阶段主动遍历处理器列表，并用 `instanceof` 判断是否调用对应子接口方法。
+> 
+> 因此，多个处理器可以同时存在；它们按注册顺序依次参与对应阶段。
+
 共有两种方式实现：
 
 - 实现 BeanPostProcessor 接口，然后将此类注册到 Spring 即可；

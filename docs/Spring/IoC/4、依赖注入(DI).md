@@ -1097,6 +1097,11 @@ public class CglibSubclassingInstantiationStrategy extends SimpleInstantiationSt
 > `applyPropertyValues()` 是 XML `<property>` 这类属性值解析和写入前准备的主线。
 > `InstantiationAwareBeanPostProcessor` 也在这里附近介入，所以注解注入可以理解为落在 `populateBean()` 这一大阶段。
 
+> [!warning] 不要把实例化后和初始化后混在一起
+> 这里的 `postProcessAfterInstantiation(...)` 是“实例化之后”，发生在 `populateBean()` 里，位置是属性填充前后。
+> `BeanPostProcessor.postProcessAfterInitialization(...)` 才是“初始化之后”，发生在 `initializeBean()` 里。
+> 所以这里说的 `BeanPostProcessor` 是广义的后处理器体系，详细见 [[BeanPostProcessor]]。
+
 至此，完成了 bean 对象 的实例化，然后就可以根据解析得到的 BeanDefinition 对象 完成对各个属性的赋值处理，也就是依赖注入。这个实现方法就是前面 AbstractAutowireCapableBeanFactory 类中的 populateBean() 方法。
 
 ```java
