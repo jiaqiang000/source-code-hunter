@@ -401,6 +401,12 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 
     // 获取 IoC容器 中指定名称的 bean
     public Object getBean(String name) throws BeansException {
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 01，getBean 入口
+         * 所有 getBean 重载最终都会进入 doGetBean
+         * ！！！！！！！！！！！！！
+         */
         return doGetBean(name, null, null, false);
     }
 
@@ -425,10 +431,22 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
             boolean typeCheckOnly) throws BeansException {
 
         // 根据用户给定的名称(也可能是别名alias) 获取 IoC容器 中与 BeanDefinition 唯一对应的 beanName
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 02.1，transformedBeanName 具体展开
+         * 作用：把别名或 &factoryBean 这类名称转换成真正 beanName
+         * ！！！！！！！！！！！！！
+         */
         final String beanName = transformedBeanName(name);
         Object bean;
 
         // 根据 beanName 查看缓存中是否有已实例化的 单例bean，对于 单例bean，整个 IoC容器 只创建一次
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 02.2，getSingleton(beanName) 具体展开
+         * 专题标记：循环依赖回头找正在创建中的 Bean 时，也会从这里进入单例缓存体系
+         * ！！！！！！！！！！！！！
+         */
         Object sharedInstance = getSingleton(beanName);
         if (sharedInstance != null && args == null) {
             if (logger.isDebugEnabled()) {
@@ -460,10 +478,22 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                 String nameToLookup = originalBeanName(name);
                 if (args != null) {
                     // 委派父级容器根据指定名称和显式的参数查找
+                    /**
+                     * ！！！！！！！！！！！！！
+                     * 阅读标注：这里对应导图 02.3，parentBeanFactory.getBean 具体展开
+                     * 作用：当前容器没有 BeanDefinition 时，委托父容器查找
+                     * ！！！！！！！！！！！！！
+                     */
                     return (T) parentBeanFactory.getBean(nameToLookup, args);
                 }
                 else {
                     // 委派父容器根据指定名称和类型查找
+                    /**
+                     * ！！！！！！！！！！！！！
+                     * 阅读标注：这里对应导图 02.3，parentBeanFactory.getBean 具体展开
+                     * 作用：当前容器没有 BeanDefinition 时，委托父容器查找
+                     * ！！！！！！！！！！！！！
+                     */
                     return parentBeanFactory.getBean(nameToLookup, requiredType);
                 }
             }
@@ -476,6 +506,12 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 
             try {
                 // 根据 beanName 获取对应的 RootBeanDefinition
+                /**
+                 * ！！！！！！！！！！！！！
+                 * 阅读标注：这里对应导图 02.4，getMergedLocalBeanDefinition 具体展开
+                 * 专题标记：BeanFactoryPostProcessor 可能已经在更早阶段改过 BeanDefinition
+                 * ！！！！！！！！！！！！！
+                 */
                 final RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
                 checkMergedBeanDefinition(mbd, beanName, args);
 
@@ -487,6 +523,12 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                 if (dependsOn != null) {
                     for (String dependsOnBean : dependsOn) {
                         // 递归调用 getBean() 方法，从末级节点依次实例化 依赖的bean
+                        /**
+                         * ！！！！！！！！！！！！！
+                         * 阅读标注：这里对应导图 02.5，dependsOn 依赖处理
+                         * 作用：控制创建顺序，不等于把 dependsOnBean 注入到当前 Bean 属性里
+                         * ！！！！！！！！！！！！！
+                         */
                         getBean(dependsOnBean);
                         // 把 当前bean 直接依赖的bean 进行注册
                         //（也就是通过 setter 或构造方法将依赖的 bean 赋值给当前 bean 对应的属性）
@@ -497,10 +539,22 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                 // 如果当前 bean 是单例的
                 if (mbd.isSingleton()) {
                     // 这里使用了一个匿名内部类，创建 bean实例对象
+                    /**
+                     * ！！！！！！！！！！！！！
+                     * 阅读标注：这里对应导图 02.6，singleton 分支
+                     * 作用：按单例 scope 创建 Bean；真正创建会在 ObjectFactory 里调用 createBean
+                     * ！！！！！！！！！！！！！
+                     */
                     sharedInstance = getSingleton(beanName, new ObjectFactory<Object>() {
                         public Object getObject() throws BeansException {
                             try {
                                 // 根据给定的 beanName 及 RootBeanDefinition对象，创建 bean 实例对象
+                                /**
+                                 * ！！！！！！！！！！！！！
+                                 * 阅读标注：这里对应导图 03，createBean 具体展开
+                                 * 后面 03-04 会进入 AbstractAutowireCapableBeanFactory#createBean / doCreateBean
+                                 * ！！！！！！！！！！！！！
+                                 */
                                 return createBean(beanName, mbd, args);
                             }
                             catch (BeansException ex) {
@@ -521,6 +575,12 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                         // 回调 beforePrototypeCreation() 方法，默认的功能是注册当前创建的原型对象
                         beforePrototypeCreation(beanName);
                         // 创建指定 bean 对象实例
+                        /**
+                         * ！！！！！！！！！！！！！
+                         * 阅读标注：这里对应导图 03，createBean 具体展开
+                         * prototype 不走单例三级缓存，每次都会创建新对象
+                         * ！！！！！！！！！！！！！
+                         */
                         prototypeInstance = createBean(beanName, mbd, args);
                     }
                     finally {
@@ -549,6 +609,12 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                             public Object getObject() throws BeansException {
                                 beforePrototypeCreation(beanName);
                                 try {
+                                    /**
+                                     * ！！！！！！！！！！！！！
+                                     * 阅读标注：这里对应导图 03，createBean 具体展开
+                                     * request/session 等自定义 scope 也会通过 ObjectFactory 进入 createBean
+                                     * ！！！！！！！！！！！！！
+                                     */
                                     return createBean(beanName, mbd, args);
                                 }
                                 finally {
