@@ -124,6 +124,14 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
 > 1. `getBean(dependsOnBean)` 或 `getBean(refName)` 递归创建依赖 Bean。
 > 2. 集合、数组、Map 里的属性值会递归解析每一个元素。
 
+> [!tip] 阅读策略：先顺主线读，专题标记先当路标
+> 这张图的主线是 `getBean()` 到 `populateBean()` / `applyPropertyValues()`。
+> 标了 `专题标记` 的地方，不表示必须立刻跳过去读，只表示后面专题会在这里接入。
+>
+> - [[BeanFactoryPostProcessor]]：发生在普通 Bean 创建前，主要影响 BeanDefinition；本文导图里的 BeanDefinition 可以理解为已经被它处理过。
+> - [[循环依赖]]：发生在 Bean 创建和属性填充过程中，尤其是 `addSingletonFactory()`、递归 `getBean(refName)`、`getSingleton()` 这些位置。
+> - [[BeanPostProcessor]]：参与 Bean 创建过程中的多个扩展点，包括提前代理、属性注入、初始化前后处理，AOP/事务代理也会走这条线。
+
 ```text
 [00] Bean 创建触发入口
      │
@@ -137,6 +145,7 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
      │        方法定义在：AbstractApplicationContext
      │        关系：容器启动流程
      │        作用：容器启动时触发非懒加载单例预实例化
+     │        专题标记：BeanFactoryPostProcessor 发生在 finishBeanFactoryInitialization 之前
      │        │
      │        └─ context::finishBeanFactoryInitialization(beanFactory)
      │           方法定义在：AbstractApplicationContext
@@ -163,15 +172,18 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
            │
            ├─ [02.2] getSingleton(beanName)
            │        作用：先查单例缓存；如果已经创建过，直接返回
+           │        专题标记：循环依赖回头找正在创建中的 Bean 时，也会从这里进入单例缓存体系
            │
            ├─ [02.3] parentBeanFactory.getBean(...)
            │        作用：当前容器没有 BeanDefinition 时，委托父容器查找
            │
            ├─ [02.4] getMergedLocalBeanDefinition(beanName)
            │        作用：拿到 RootBeanDefinition，也就是创建 Bean 的配方
+           │        专题标记：BeanFactoryPostProcessor 可能已经在更早阶段改过 BeanDefinition
            │
            ├─ [02.5] dependsOn 依赖处理
            │        作用：先递归 getBean(dependsOnBean)，保证 depends-on 指定的 Bean 先创建
+           │        专题标记：dependsOn 是 BeanDefinition 元数据，和 BeanFactoryPostProcessor 间接相关
            │
            └─ [02.6] 按 scope 创建 Bean
               │
@@ -191,6 +203,7 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                     │
                     ├─ [03.2] resolveBeforeInstantiation(...)
                     │        作用：给 InstantiationAwareBeanPostProcessor 一个提前返回代理对象的机会
+                    │        专题标记：BeanPostProcessor；AOP 代理可能在这里提前短路 Bean 创建
                     │
                     └─ [04] beanFactory::doCreateBean(...)
                        方法定义在：AbstractAutowireCapableBeanFactory
@@ -205,9 +218,11 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │
                        ├─ [04.2] applyMergedBeanDefinitionPostProcessors(...)
                        │        作用：合并后 BeanDefinition 后处理
+                       │        专题标记：BeanPostProcessor；这里处理合并后的 BeanDefinition 信息
                        │
                        ├─ [04.3] addSingletonFactory(...)
                        │        作用：提前暴露单例引用，处理循环依赖
+                       │        专题标记：循环依赖；如果有 AOP/事务代理，还会牵涉 BeanPostProcessor 的早期引用逻辑
                        │
                        ├─ [04.4] populateBean(...)
                        │        作用：属性填充 / 依赖注入
@@ -217,24 +232,28 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │        │
                        │        ├─ [04.4.2] InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
                        │        │        作用：属性填充前的拦截点
+                       │        │        专题标记：BeanPostProcessor
                        │        │
                        │        ├─ [04.4.3] autowireByName / autowireByType
                        │        │        作用：处理 XML autowire 模式
                        │        │
                        │        ├─ [04.4.4] InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
                        │        │        作用：注解注入参与点；@Autowired / @Resource 这类会在这里附近介入
+                       │        │        专题标记：BeanPostProcessor；@Autowired / @Resource 注解注入入口
                        │        │
                        │        └─ [04.4.5] applyPropertyValues(...)
                        │                 作用：解析属性值并准备写入对象
                        │                 │
                        │                 ├─ BeanDefinitionValueResolver.resolveValueIfNecessary(...)
                        │                 │        作用：把 RuntimeBeanReference、TypedStringValue、集合等配置值解析成真实对象
+                       │                 │        专题标记：循环依赖会在解析 RuntimeBeanReference 时递归 getBean(refName)
                        │                 │
                        │                 └─ BeanWrapper.setPropertyValues(...)
                        │                          作用：真正通过属性访问器 / setter 写入属性
                        │
                        ├─ [04.5] initializeBean(...)
                        │        作用：Aware、初始化方法、BeanPostProcessor 前后处理；本文只作为边界
+                       │        专题标记：BeanPostProcessor；初始化前后处理、AOP 代理常在这一带出现
                        │
                        └─ [04.6] registerDisposableBeanIfNecessary(...)
                                 作用：注册销毁逻辑
