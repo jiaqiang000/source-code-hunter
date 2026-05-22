@@ -183,6 +183,12 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
            │
            ├─ [02.5] dependsOn 依赖处理
            │        作用：先递归 getBean(dependsOnBean)，保证 depends-on 指定的 Bean 先创建
+           │        边界：这是创建顺序依赖，不等于把 dependsOnBean 注入到当前 Bean 属性里
+           │        项目例子：
+           │          - `@DependsOn("webInfo")` / `depends-on="webInfo"` 表示当前 Bean 创建前，先创建 `webInfo`
+           │          - 你的项目里 `webInfo` 会把配置值写入 `WebInfo.env`、`WebInfo.serverName` 等静态状态
+           │          - `PddApiServiceImpl`、`ScheduledUtil` 这类 Bean 创建时会读 `WebInfo.isProduct()`、`WebInfo.codeBranch`
+           │          - 所以它们需要 `webInfo` 先完成初始化，但不一定需要持有一个 `WebInfo` 字段
            │        专题标记：dependsOn 是 BeanDefinition 元数据，和 BeanFactoryPostProcessor 间接相关
            │
            └─ [02.6] 按 scope 创建 Bean
@@ -515,10 +521,20 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                 final RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
                 checkMergedBeanDefinition(mbd, beanName, args);
 
-                // 获取当前 bean 所依赖bean 的 beanName，下面的 getBean(dependsOnBean) 方法会触发
-                // getBean() 的递归调用，直到取到一个不依赖任何其它 bean 的 bean 为止。
-                // 比如：beanA 依赖了 beanB，而 beanB 依赖了 beanC，那么在实例化 beanA 时会先实例化
-                // beanC，然后实例化 beanB 并将 beanC 注入进去，最后实例化 beanA 时将 beanB 注入
+                // 获取当前 bean 显式声明的 depends-on beanName。
+                // 这里的依赖是“创建顺序依赖”，不是“属性注入依赖”。
+                // 它来自 XML 的 depends-on 或注解 @DependsOn。
+                //
+                // 下面的 getBean(dependsOnBean) 会先把这些 Bean 创建出来。
+                // 比如：beanA depends-on beanB，beanB depends-on beanC，
+                // 那么创建 beanA 前会先创建 beanC，再创建 beanB，最后才继续创建 beanA。
+                //
+                // 注意：这一步只保证创建顺序，不会把 beanB 自动赋值给 beanA 的字段。
+                // 真正把 B 注入到 A.b，要看 constructor-arg、property ref、@Autowired、@Resource 等。
+                //
+                // 项目例子：@DependsOn("webInfo") / depends-on="webInfo"
+                // 表示当前 Bean 创建前先创建 webInfo，让 WebInfo.env、WebInfo.serverName 等静态状态
+                // 先被配置值写好；当前 Bean 后面可以直接读取 WebInfo.isProduct() 等静态方法。
                 String[] dependsOn = mbd.getDependsOn();
                 if (dependsOn != null) {
                     for (String dependsOnBean : dependsOn) {
@@ -527,11 +543,12 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                          * ！！！！！！！！！！！！！
                          * 阅读标注：这里对应导图 02.5，dependsOn 依赖处理
                          * 作用：控制创建顺序，不等于把 dependsOnBean 注入到当前 Bean 属性里
+                         * 项目例子：先创建 webInfo，再创建读取 WebInfo 静态状态的业务 Bean
                          * ！！！！！！！！！！！！！
                          */
                         getBean(dependsOnBean);
-                        // 把 当前bean 直接依赖的bean 进行注册
-                        //（也就是通过 setter 或构造方法将依赖的 bean 赋值给当前 bean 对应的属性）
+                        // 注册当前 bean 和 dependsOnBean 的依赖关系，供销毁顺序等容器管理逻辑使用。
+                        // 这里仍然不是属性赋值；真正属性赋值发生在后面的 populateBean()。
                         registerDependentBean(dependsOnBean, beanName);
                     }
                 }
