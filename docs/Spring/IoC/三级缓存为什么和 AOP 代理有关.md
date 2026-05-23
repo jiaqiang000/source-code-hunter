@@ -1212,7 +1212,7 @@ rawA
 ```
 
 > [!note] 代理对象可能早于 initializeBean 出现，但增强逻辑不会在这里执行
-> 在“循环依赖 + 当前 Bean 需要 AOP 代理”的场景下，`getEarlyBeanReference(...)` 可能会在 `initializeBean(...)` 之前创建出 `proxyA`，并把这个 `proxyA` 提前注入给别的 Bean。这里提前出现的只是代理对象本身；事务、切面等增强逻辑不会在 `createProxy(...)` 时执行，而是等后面业务代码真正调用 `proxyA.method()` 时，才进入 `JdkDynamicAopProxy::invoke(...)` 或 `CglibAopProxy::intercept(...)`。
+> 在“循环依赖 + 当前 Bean 需要 AOP 代理”的场景下，`getEarlyBeanReference(...)` 可能会在 `initializeBean(...)` 之前创建出 `proxyA`，并把这个 `proxyA` 提前注入给别的 Bean。这里和依赖注入直接相关：如果别的 Bean 提前依赖 A，而 A 最终应该被 AOP 代理，那么注入进去的应该是 `proxyA`，不是 `rawA`。这里提前出现的只是代理对象本身；事务、切面等增强逻辑不会在 `createProxy(...)` 时执行，而是等后面业务代码真正调用 `proxyA.method()` 时，才进入 `JdkDynamicAopProxy::invoke(...)` 或 `CglibAopProxy::intercept(...)`。
 
 所以这里不是 `ProxyFactory -> AdvisedSupport` 两个并列对象。
 
