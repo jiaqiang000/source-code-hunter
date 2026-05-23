@@ -80,7 +80,7 @@ B.a = 原始 A
 
 [对象6] AbstractAutoProxyCreator
         关系：AOP 自动代理创建器，也是 SmartInstantiationAwareBeanPostProcessor
-        作用：如果当前 Bean 需要 AOP/事务代理，就在早期引用阶段提前创建代理
+        作用：循环依赖触发早期引用时，如果当前 Bean 需要 AOP/事务代理，就提前创建代理
 
 [对象7] ProxyFactory
         关系：createProxy() 中创建
@@ -210,14 +210,26 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
                     │
                     ├─ populateBean("b") 完成
                     ├─ initializeBean("b") 完成
-                    └─ B 进入 singletonObjects 一级缓存
+                    └─ getSingleton("b", ObjectFactory) 外层完成后调用 addSingleton("b", exposedB)
+                       作用：B 进入 singletonObjects 一级缓存，并清理 B 的 singletonFactories / earlySingletonObjects
         │
         └─ [11] A 拿到 B 后继续完成
            │
            ├─ A.b = B
            ├─ populateBean("a") 完成
            ├─ initializeBean("a") 完成
-           └─ A 进入 singletonObjects 一级缓存
+           ├─ [11.1] getSingleton("a", false)
+           │        方法定义在：AbstractAutowireCapableBeanFactory#doCreateBean
+           │        作用：检查 A 是否已经因为循环依赖被提前拿过早期引用
+           │        注意：allowEarlyReference=false，不会再次触发 singletonFactory.getObject()
+           │        │
+           │        └─ 如果拿到 earlyA，并且 exposedObject 还是 rawA
+           │           │
+           │           └─ exposedObject = earlyA
+           │              作用：让容器最终暴露的 A 和 B.a 注入的早期 A 保持一致
+           │
+           └─ getSingleton("a", ObjectFactory) 外层完成后调用 addSingleton("a", exposedA)
+              作用：A 进入 singletonObjects 一级缓存，并清理 A 的 singletonFactories / earlySingletonObjects
               │
               └─ [12] 后续业务代码调用 A 的方法
                  │
@@ -528,6 +540,11 @@ wrapIfNecessary(bean, beanName, cacheKey)
 
 判断当前 Bean 是否需要代理。
 
+> [!note] 普通 AOP 和循环依赖 AOP 的差别
+> 如果没有循环依赖，`getEarlyBeanReference()` 通常不会被触发。
+> 普通 AOP 代理更多是在 `postProcessAfterInitialization()` 里创建。
+> 这里讨论的是：循环依赖已经迫使 Spring 提前暴露 A，此时 AOP 必须提前介入，避免其他 Bean 注入到原始 A。
+
 ### 07 AbstractAutoProxyCreator：wrapIfNecessary 判断是否需要代理
 
 ```java
@@ -802,6 +819,10 @@ Advisor
 
 每次方法调用，都会围绕当前 `method` 找匹配的链。
 
+> [!note] 这里只截取主线
+> 上面的代码主要展示 `PointcutAdvisor` 这条常见路径。
+> 实际源码还会处理 `IntroductionAdvisor` 和其他 Advisor 类型，但核心目的相同：把 Advisor 转成当前方法要执行的拦截器链。
+
 ### 13 ReflectiveMethodInvocation：proceed 怎么执行增强和目标方法
 
 ```java
@@ -862,7 +883,7 @@ target.method(args)
 
 ```text
 如果没有循环依赖：
-  A 创建完成后直接进入 singletonObjects
+  A 创建完成后通过 addSingleton 进入 singletonObjects
   ObjectFactory 可能根本不会执行
 
 如果有普通循环依赖：
