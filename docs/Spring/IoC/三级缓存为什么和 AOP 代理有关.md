@@ -1211,6 +1211,9 @@ rawA
                                           └─ proxyA.method() 进入 11 CglibAopProxy::intercept(...)
 ```
 
+> [!note] 代理对象可能早于 initializeBean 出现，但增强逻辑不会在这里执行
+> 在“循环依赖 + 当前 Bean 需要 AOP 代理”的场景下，`getEarlyBeanReference(...)` 可能会在 `initializeBean(...)` 之前创建出 `proxyA`，并把这个 `proxyA` 提前注入给别的 Bean。这里提前出现的只是代理对象本身；事务、切面等增强逻辑不会在 `createProxy(...)` 时执行，而是等后面业务代码真正调用 `proxyA.method()` 时，才进入 `JdkDynamicAopProxy::invoke(...)` 或 `CglibAopProxy::intercept(...)`。
+
 所以这里不是 `ProxyFactory -> AdvisedSupport` 两个并列对象。
 
 更准确地说，`ProxyFactory` 通过继承拥有 `AdvisedSupport` 的配置能力，又通过父类 `ProxyCreatorSupport` 持有 `DefaultAopProxyFactory`。最后 `ProxyFactory` 把自己作为 `AdvisedSupport config` 交给 `DefaultAopProxyFactory`，由它选择 JDK 还是 CGLIB。
