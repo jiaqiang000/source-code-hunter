@@ -387,7 +387,7 @@ singletonFactories
 
 `registeredSingletons` 不是三级缓存的一层。它只是登记 singleton beanName，用于单例注册表管理，比如获取单例名称、销毁单例时按注册顺序处理等。
 
-严格的三级缓存只有：
+严格的三级缓存只有：[[循环依赖#三级缓存分别负责什么]]
 
 ```text
 singletonObjects
