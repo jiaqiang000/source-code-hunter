@@ -1159,27 +1159,68 @@ SingletonTargetSource 内部持有 rawA
 
 ### 08 AbstractAutoProxyCreator：createProxy 只是创建代理，不执行方法
 
-先把 07-09 包装出来的东西画出来：
+先把 07-09 的真实对象链画出来：
 
 ```text
-proxyA
-  ├─ TargetSource = SingletonTargetSource(rawA)
-  │    作用：保存真正的原始对象 rawA
+rawA
+  关系：createBeanInstance() 刚实例化出来的原始对象
   │
-  ├─ Advisors
-  │    作用：保存当前 Bean 命中的增强规则
-  │
-  ├─ proxyTargetClass / interfaces / exposeProxy 等代理配置
-  │    作用：决定代理行为和代理方式
-  │
-  └─ 底层代理技术
-       ├─ JDK 动态代理
-       └─ CGLIB 代理
+  └─ new SingletonTargetSource(rawA)
+     关系：TargetSource 的一种实现，内部固定持有 rawA
+     │
+     └─ ProxyFactory / AdvisedSupport
+        关系：保存代理配置，不是最终业务代理对象
+        保存：
+          - targetSource = SingletonTargetSource(rawA)
+          - advisors = 当前 Bean 命中的增强规则
+          - interfaces / proxyTargetClass / exposeProxy 等代理配置
+        │
+        └─ DefaultAopProxyFactory
+           关系：根据代理配置选择代理技术
+           │
+           ├─ JDK：JdkDynamicAopProxy
+           │   关系：InvocationHandler，负责处理 JDK 代理对象的方法调用
+           │   结果：运行时生成 $Proxy... 对象，也就是 proxyA
+           │   后续：proxyA.method() 进入 10 JdkDynamicAopProxy::invoke(...)
+           │
+           └─ CGLIB：ObjenesisCglibAopProxy / CglibAopProxy
+               关系：负责创建目标类的 CGLIB 子类代理
+               结果：运行时生成 Xxx$$EnhancerBySpringCGLIB$$... 对象，也就是 proxyA
+               后续：proxyA.method() 进入 11 CglibAopProxy::intercept(...)
 ```
 
 所以 `createProxy(...)` 不是把 `rawA` 改没了。
 
 它创建的是一个对外暴露的代理对象 `proxyA`，而 `rawA` 会作为目标对象被 `TargetSource` 持有。
+
+这里说的 `proxyA` 不是源码里提前写好的 Java 类。
+
+如果走 JDK 动态代理，JDK 会在运行时根据接口生成类似这样的类名：
+
+```text
+com.sun.proxy.$Proxy123
+jdk.proxy2.$Proxy123
+```
+
+如果走 CGLIB，CGLIB 会在运行时生成目标类的子类，类名通常类似：
+
+```text
+AServiceImpl$$EnhancerBySpringCGLIB$$xxxx
+```
+
+`$` / `$$` 只是生成类名的一部分。Java 类名里允许出现 `$`，编译器和代理框架经常用它标识内部类、匿名类、运行时生成类。
+
+所以这里没有一个固定的 `ProxyA.java` 可以贴。
+
+能读到的真实源码是这条对象链：
+
+```text
+ProxyFactory.getProxy()
+  -> ProxyCreatorSupport.createAopProxy()
+    -> DefaultAopProxyFactory.createAopProxy()
+      -> JdkDynamicAopProxy 或 ObjenesisCglibAopProxy
+        -> 运行时生成 proxyA
+```
 
 ```java
 protected Object createProxy(Class<?> beanClass, @Nullable String beanName,
