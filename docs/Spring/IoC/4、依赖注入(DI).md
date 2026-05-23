@@ -205,7 +205,32 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
            └─ [02.6] 按 scope 创建 Bean
               │
               ├─ singleton -> getSingleton(beanName, ObjectFactory)
+              │        作用：单例创建会进入 DefaultSingletonBeanRegistry 的单例缓存体系
+              │        关系：后面的 [04.3] addSingletonFactory(...) 只有 singleton 才可能用上
+              │
               ├─ prototype -> 直接创建
+              │        作用：每次 getBean 都创建一个新对象
+              │        关键点：prototype 不进入 singletonObjects / earlySingletonObjects / singletonFactories
+              │        失败分支：prototype 循环依赖通常解决不了
+              │        │
+              │        └─ 例子：prototype A 依赖 prototype B，B 又依赖 A
+              │           │
+              │           └─ getBean("a")  // prototype
+              │              │  作用：直接创建一个新的 A，不放入单例三级缓存
+              │              │
+              │              └─ A 需要 B
+              │                 │
+              │                 └─ getBean("b")  // prototype
+              │                    │  作用：直接创建一个新的 B，也不放入单例三级缓存
+              │                    │
+              │                    └─ B 需要 A
+              │                       │
+              │                       └─ getBean("a")  // 又要创建一个新的 A
+              │                          │
+              │                          └─ 失败原因：
+              │                             prototype 没有稳定的“同一个 A”可以提前暴露；
+              │                             也没有 singletonFactories 里的 ObjectFactory 可以回头取早期引用。
+              │
               └─ request/session 等自定义 scope -> scope.get(... ObjectFactory ...)
               │
               └─ 上面需要创建新对象的分支，最终都会调用：
@@ -231,6 +256,35 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │        │
                        │        ├─ 工厂方法实例化
                        │        ├─ 构造器自动装配 / 构造器注入
+                       │        │        失败分支：单例构造器循环依赖通常卡在这里
+                       │        │        │
+                       │        │        └─ 例子：A 构造器需要 B，B 构造器又需要 A
+                       │        │           │
+                       │        │           └─ getBean("a")
+                       │        │              │
+                       │        │              └─ createBean("a")
+                       │        │                 │
+                       │        │                 └─ doCreateBean("a")
+                       │        │                    │
+                       │        │                    └─ createBeanInstance("a")
+                       │        │                       │  作用：准备调用 A 的构造器创建 rawA
+                       │        │                       │
+                       │        │                       └─ A 构造器需要 B
+                       │        │                          │
+                       │        │                          └─ getBean("b")
+                       │        │                             │
+                       │        │                             └─ createBeanInstance("b")
+                       │        │                                │  作用：准备调用 B 的构造器创建 rawB
+                       │        │                                │
+                       │        │                                └─ B 构造器需要 A
+                       │        │                                   │
+                       │        │                                   └─ getBean("a")
+                       │        │                                      │
+                       │        │                                      └─ 失败原因：
+                       │        │                                         A 正在创建中，但 rawA 还没有创建出来；
+                       │        │                                         流程还没走到 [04.3] addSingletonFactory("a", ...)；
+                       │        │                                         所以三级缓存里没有 A 的 ObjectFactory，没法提前暴露 A。
+                       │        │
                        │        └─ 默认无参构造器实例化
                        │
                        ├─ [04.2] applyMergedBeanDefinitionPostProcessors(...)
@@ -240,6 +294,17 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        ├─ [04.3] addSingletonFactory(...)
                        │        作用：提前暴露单例引用，处理循环依赖
                        │        专题标记：循环依赖；如果有 AOP/事务代理，还会牵涉 BeanPostProcessor 的早期引用逻辑
+                       │        对照：只有 [04.1] 已经创建出 raw bean 后，Spring 才有提前暴露当前 Bean 的机会
+                       │        │
+                       │        └─ 为什么属性注入循环依赖能走到这里
+                       │           │
+                       │           └─ A 先通过无参构造器 / 工厂方法 / 可完成的构造器创建出 rawA
+                       │              │
+                       │              └─ addSingletonFactory("a", ObjectFactory)
+                       │                 │  作用：把“将来怎么拿 A 的早期引用”放进 singletonFactories
+                       │                 │
+                       │                 └─ 后面 populateBean("a") 时 A 才去找 B；
+                       │                    B 再回头找 A，就能从三级缓存触发 ObjectFactory。
                        │
                        ├─ [04.4] populateBean(...)
                        │        作用：属性填充 / 依赖注入
