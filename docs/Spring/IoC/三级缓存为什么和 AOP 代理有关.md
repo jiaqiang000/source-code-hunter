@@ -298,6 +298,398 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
                     作用：把 singletonFactories、earlySingletonObjects、singletonObjects 的职责重新合起来
 ```
 
+## 先把核心问题说透：为什么不一开始就创建代理
+
+这一节先回答一个最容易卡住的问题：
+
+```text
+既然 A 有 @Transactional，Spring 不是很早就能知道 A 最终需要代理吗？
+那为什么不在 A 刚实例化后就直接创建 proxyA，然后提前暴露 proxyA？
+```
+
+这个问题不能只用“Spring 就是这样设计的”来回答。
+
+结合下面的全局导图，真正要分清的是：
+
+```text
+Spring 能不能提前判断 A 可能需要代理
+≠
+Spring 是否应该现在就生成 earlyA
+≠
+这个 earlyA 是否真的已经被别的 Bean 提前拿走
+```
+
+先设一个具体例子：
+
+```java
+@Service
+public class AService {
+    @Autowired
+    private BService bService;
+
+    @Transactional
+    public void pay() {
+    }
+}
+
+@Service
+public class BService {
+    @Autowired
+    private AService aService;
+}
+```
+
+这里有两件事同时发生：
+
+```text
+AService 和 BService 形成属性循环依赖。
+AService 有 @Transactional，所以最终对外应该暴露 proxyA，而不是 rawA。
+```
+
+### 对应导图：Spring 当前真正做了什么
+
+看下面全局导图里的几个点：
+
+```text
+[00.1] createBeanInstance("a")
+  得到 rawA
+
+[01]-[02] addSingletonFactory("a", ObjectFactory)
+  只把 ObjectFactory 放进 singletonFactories
+  不执行 getEarlyBeanReference
+  不创建 proxyA
+
+[03] B 回头 getBean("a")
+  这才表示真的有人需要 A 的早期引用
+
+[04]-[09] singletonFactory.getObject()
+  这时才执行 getEarlyBeanReference
+  这时才通过 wrapIfNecessary 判断 earlyA 是 rawA 还是 proxyA
+
+导图里“getSingleton("a") 收到 earlyA”这一段
+  earlyA 被放入 earlySingletonObjects
+  B.a = earlyA
+```
+
+对应源码在 `AbstractAutowireCapableBeanFactory#doCreateBean()`：
+
+```java
+addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
+```
+
+这行对应导图 `[01]-[02]`。
+
+它的关键点不是“创建 earlyA”，而是：
+
+```text
+登记一个以后可能生成 earlyA 的 ObjectFactory。
+```
+
+然后 `doCreateBean()` 继续走：
+
+```java
+populateBean(beanName, mbd, instanceWrapper);
+exposedObject = initializeBean(beanName, exposedObject, mbd);
+```
+
+这对应导图里 A 继续属性填充和初始化。
+
+真正判断早期引用的地方在 `AbstractAutoProxyCreator#getEarlyBeanReference()`：
+
+```java
+this.earlyProxyReferences.put(cacheKey, bean);
+return wrapIfNecessary(bean, beanName, cacheKey);
+```
+
+这对应导图 `[06]-[07]`。
+
+普通 AOP / 事务代理的常规入口在 `AbstractAutoProxyCreator#postProcessAfterInitialization()`：
+
+```java
+if (this.earlyProxyReferences.remove(cacheKey) != bean) {
+    return wrapIfNecessary(bean, beanName, cacheKey);
+}
+return bean;
+```
+
+这对应导图里 `initializeBean("a")` 下的 `postProcessAfterInitialization(...)`。
+
+这两段源码放在一起看，才能看清本质。
+
+### 为什么不是在 [01] 就提前创建 proxyA
+
+如果在 `[01] addSingletonFactory(...)` 的位置就提前调用：
+
+```java
+getEarlyBeanReference(beanName, mbd, rawA)
+```
+
+那会提前进入：
+
+```text
+AbstractAutoProxyCreator#getEarlyBeanReference
+  -> earlyProxyReferences.put(cacheKey, rawA)
+  -> wrapIfNecessary(rawA)
+```
+
+如果 A 有事务，确实可以提前得到：
+
+```text
+proxyA
+```
+
+所以你的问题是合理的：
+
+```text
+既然最终都要 proxyA，早创建晚创建不都一样吗？
+```
+
+关键在于：**Spring 还必须知道这个 proxyA 有没有真的被别人提前拿走过。**
+
+也就是说，Spring 要区分两件事：
+
+```text
+A 可以被提前暴露
+A 已经真的被提前暴露
+```
+
+如果 `[01]` 就创建 proxyA，会出现两种方案。
+
+### 方案一：提前调用 getEarlyBeanReference，但不把结果固定成 earlyA
+
+假设你在 `[01]` 提前调用了：
+
+```text
+getEarlyBeanReference(rawA)
+```
+
+它会执行：
+
+```text
+earlyProxyReferences.put(cacheKey, rawA)
+```
+
+这个标记在 `AbstractAutoProxyCreator` 里的含义是：
+
+```text
+这个 rawA 已经走过早期代理路径。
+后面 postProcessAfterInitialization 不要再重复创建 AOP 代理。
+```
+
+但是如果后面并没有发生循环依赖：
+
+```text
+没有 B 回头 getBean("a")
+没有人真正拿走 earlyA
+earlySingletonObjects 里也没有 A
+```
+
+那么 A 继续走正常初始化：
+
+```text
+initializeBean("a")
+  -> postProcessAfterInitialization(rawA, "a")
+```
+
+这时 `AbstractAutoProxyCreator` 看到：
+
+```text
+earlyProxyReferences.remove(cacheKey) == rawA
+```
+
+于是它会认为：
+
+```text
+A 已经走过早期代理路径，不要再 wrapIfNecessary。
+```
+
+结果就是：
+
+```text
+postProcessAfterInitialization 返回 rawA
+```
+
+后面 `doCreateBean()` 又会执行：
+
+```java
+Object earlySingletonReference = getSingleton(beanName, false);
+```
+
+这个调用对应导图里：
+
+```text
+getSingleton("a", false)
+  作用：检查 A 是否已经因为循环依赖被提前拿过早期引用
+```
+
+注意这里 `allowEarlyReference=false`，它不会再触发三级缓存里的 `ObjectFactory`。
+
+如果没有人真的提前拿过 A：
+
+```text
+earlySingletonObjects 里没有 A
+getSingleton("a", false) 返回 null
+```
+
+最后 A 可能就以 rawA 暴露出去。
+
+所以，**提前调用 getEarlyBeanReference 但不固定结果，会破坏 `earlyProxyReferences` 的语义**。
+
+它把“提前判断过”误当成了：
+
+```text
+早期代理真的已经被别人拿走过。
+```
+
+### 方案二：提前创建 proxyA，并把它固定成 earlyA
+
+另一种做法是：
+
+```text
+[01] 创建 proxyA
+[01] 直接把 proxyA 放入 earlySingletonObjects
+```
+
+这样即使后面没有 B 回头拿 A，`getSingleton("a", false)` 也能拿到 proxyA，最终暴露 proxyA。
+
+这个方案看起来能解决问题，但它等于改变了生命周期：
+
+```text
+普通情况：
+  A 还没有被任何 Bean 提前依赖
+  也会在 createBeanInstance 之后、initializeBean 之前创建代理
+
+Spring 当前设计：
+  没有人提前依赖 A
+  就不执行 getEarlyBeanReference
+  AOP/事务代理仍然在 postProcessAfterInitialization 里创建
+```
+
+这不是“绝对不能做”，而是它把一个特殊路径变成了常规路径：
+
+```text
+特殊路径：循环依赖真的发生，A 被提前拿走，才生成 earlyA。
+常规路径：没有循环依赖，A 初始化后再代理。
+```
+
+如果想既提前创建 proxyA，又不改变普通生命周期，那你还要继续记录：
+
+```text
+proxyA 已经生成，但还没有被别人拿走。
+proxyA 已经生成，并且已经被别人拿走。
+```
+
+这又回到了状态拆分的问题。
+
+### 三级缓存真正拆开的三个状态
+
+所以三级缓存不是在回答：
+
+```text
+能不能提前知道 A 要不要代理？
+```
+
+它真正回答的是：
+
+```text
+A 处在什么暴露状态？
+```
+
+结合导图和源码，它拆成三种状态：
+
+```text
+singletonFactories
+  对应导图 [01]-[02]
+  状态：A 可以被提前暴露，但 earlyA 还没有生成。
+  源码：addSingletonFactory(beanName, () -> getEarlyBeanReference(...))
+
+earlySingletonObjects
+  对应导图 [03]-[04] 执行 ObjectFactory 之后
+  状态：有人真的因为循环依赖拿过 A，earlyA 已经生成并固定。
+  earlyA 可能是 rawA，也可能是 proxyA。
+
+singletonObjects
+  对应导图 A 完整创建结束后
+  状态：A 已经完整创建完成，是最终单例对象。
+```
+
+这就是为什么第三级缓存存的是 `ObjectFactory`。
+
+它不是为了多一层 Map，而是为了表达：
+
+```text
+现在只是“可以提前暴露”，还不是“已经提前暴露”。
+```
+
+### rawA 和 proxyA 不是谁消灭谁
+
+还有一个容易混的点：
+
+```text
+如果 A 需要代理，那是不是 rawA 就没用了？
+```
+
+不是。
+
+如果 A 需要事务/AOP，正常对外依赖引用应该是：
+
+```text
+proxyA
+```
+
+但是 rawA 仍然存在。
+
+它通常作为代理内部的 target：
+
+```text
+B.a = proxyA
+B 调用 proxyA.pay()
+  -> 进入事务 / AOP 拦截器
+  -> 最后调用 rawA.pay()
+```
+
+所以：
+
+```text
+proxyA 是对外暴露的 Bean 引用。
+rawA 是代理内部最终调用的目标对象。
+```
+
+这也是后面 `[10]-[13]` 要讲的内容：
+
+```text
+[10]/[11] 代理对象被调用
+[12] 找 MethodInterceptor 链
+[13] 最后调用 rawA 的目标方法
+```
+
+### 最后把问题压缩成一句话
+
+这篇文档里讨论的三级缓存，不是为了解决：
+
+```text
+Spring 能不能提前判断 @Transactional。
+```
+
+而是为了解决：
+
+```text
+只有当 A 的早期引用真的被别人拿走时，
+才生成并固定 earlyA；
+否则继续走正常 initializeBean -> postProcessAfterInitialization 的代理流程。
+```
+
+换成导图语言就是：
+
+```text
+[01]-[02] 只登记 ObjectFactory，表示 A 可以被提前暴露。
+[03] 真的有人回头找 A。
+[04]-[09] 这时才生成 earlyA，决定是 rawA 还是 proxyA。
+“A 拿到 B 后继续完成”这一段里，A 后面继续初始化，并检查 earlyA 是否真的被拿走过。
+```
+
+这才是三级缓存和 AOP 代理真正连起来的地方。
+
 ## 正文
 
 ### 00 AbstractAutowireCapableBeanFactory：A 先被实例化，但还没完整创建
