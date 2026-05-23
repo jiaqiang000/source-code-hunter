@@ -113,7 +113,8 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
 ```text
 [00] beanFactory::doCreateBean("a")
      方法定义在：AbstractAutowireCapableBeanFactory
-     作用：创建单个 Bean 的主流程
+     对应正文：00 AbstractAutowireCapableBeanFactory：A 先被实例化，但还没完整创建
+     作用：创建单个 Bean 的主流程，先得到原始对象 rawA
      │
      ├─ [00.1] createBeanInstance("a")
      │        作用：先创建原始对象 rawA
@@ -125,14 +126,15 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │
      ├─ [01] addSingletonFactory("a", ObjectFactory)
      │        方法定义在：DefaultSingletonBeanRegistry
-     │        作用：把 ObjectFactory 放入 singletonFactories
-     │        注意：这里只保存 lambda，不执行 getEarlyBeanReference
+     │        对应正文：01 AbstractAutowireCapableBeanFactory：addSingletonFactory 只是登记早期引用工厂
+     │        作用：在 doCreateBean() 中登记早期引用工厂
      │        │
-     │        └─ ObjectFactory.getObject()
-     │           方法体：getEarlyBeanReference("a", mbd, rawA)
-     │           状态：暂时还没有执行
+     │        └─ [02] DefaultSingletonBeanRegistry::addSingletonFactory("a", ObjectFactory)
+     │           对应正文：02 DefaultSingletonBeanRegistry：ObjectFactory 被放入三级缓存
+     │           作用：把 ObjectFactory 放入 singletonFactories
+     │           注意：这里只保存 lambda，不执行 getEarlyBeanReference
      │
-     ├─ [02] populateBean("a")
+     ├─ populateBean("a")
      │        方法定义在：AbstractAutowireCapableBeanFactory
      │        作用：填充 A 的属性
      │        │
@@ -141,7 +143,7 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │           └─ getBean("b")
      │              作用：递归创建 B
      │              │
-     │              └─ [03] beanFactory::doCreateBean("b")
+     │              └─ beanFactory::doCreateBean("b")
      │                 作用：创建 B
      │                 │
      │                 ├─ createBeanInstance("b")
@@ -157,9 +159,10 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │                 │     │
      │                 │     └─ getBean("a")
      │                 │        │
-     │                 │        └─ [04] getSingleton("a")
+     │                 │        └─ [03] getSingleton("a")
      │                 │           方法定义在：DefaultSingletonBeanRegistry
-     │                 │           作用：B 回头找正在创建中的 A
+     │                 │           对应正文：03 DefaultSingletonBeanRegistry：什么时候才执行 ObjectFactory
+     │                 │           作用：B 回头找正在创建中的 A，并触发三级缓存中的 ObjectFactory
      │                 │           │
      │                 │           ├─ 查 singletonObjects
      │                 │           │  结果：没有完整 A
@@ -170,19 +173,26 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │                 │           └─ 查 singletonFactories
      │                 │              结果：找到 A 的 ObjectFactory
      │                 │              │
-     │                 │              ├─ [05] singletonFactory.getObject()
-     │                 │              │  作用：这时才真正执行 lambda
+     │                 │              ├─ singletonFactory.getObject()
+     │                 │              │  作用：这时才真正执行 01 中保存的 lambda
      │                 │              │  │
-     │                 │              │  └─ [06] beanFactory::getEarlyBeanReference("a", mbd, rawA)
+     │                 │              │  └─ [04] beanFactory::getEarlyBeanReference("a", mbd, rawA)
      │                 │              │     方法定义在：AbstractAutowireCapableBeanFactory
+     │                 │              │     对应正文：04 AbstractAutowireCapableBeanFactory：getEarlyBeanReference 决定早期引用是什么
      │                 │              │     作用：生成准备提前暴露的 A
      │                 │              │     │
      │                 │              │     └─ 遍历 SmartInstantiationAwareBeanPostProcessor
      │                 │              │        │
-     │                 │              │        └─ [07] AbstractAutoProxyCreator::getEarlyBeanReference(rawA, "a")
-     │                 │              │           作用：AOP 场景提前生成代理
+     │                 │              │        ├─ [05] SmartInstantiationAwareBeanPostProcessor::getEarlyBeanReference(...)
+     │                 │              │        │  对应正文：05 SmartInstantiationAwareBeanPostProcessor：默认什么都不做
+     │                 │              │        │  作用：默认返回原始对象 rawA
+     │                 │              │        │
+     │                 │              │        └─ [06] AbstractAutoProxyCreator::getEarlyBeanReference(rawA, "a")
+     │                 │              │           对应正文：06 AbstractAutoProxyCreator：AOP 场景提前创建代理
+     │                 │              │           作用：AOP 场景提前尝试生成代理
      │                 │              │           │
-     │                 │              │           └─ [08] wrapIfNecessary(rawA, "a", cacheKey)
+     │                 │              │           └─ [07] wrapIfNecessary(rawA, "a", cacheKey)
+     │                 │              │              对应正文：07 AbstractAutoProxyCreator：wrapIfNecessary 判断是否需要代理
      │                 │              │              作用：判断 A 是否需要被代理
      │                 │              │              │
      │                 │              │              ├─ 不需要代理
@@ -191,13 +201,16 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │                 │              │              │
      │                 │              │              └─ 需要代理
      │                 │              │                 │
-     │                 │              │                 └─ [09] createProxy(beanClass, beanName, advisors, SingletonTargetSource(rawA))
+     │                 │              │                 └─ [08] createProxy(beanClass, beanName, advisors, SingletonTargetSource(rawA))
+     │                 │              │                    对应正文：08 AbstractAutoProxyCreator：createProxy 只是创建代理，不执行方法
      │                 │              │                    作用：创建代理对象 proxyA
      │                 │              │                    注意：这里只创建代理，不执行目标方法
      │                 │              │                    │
-     │                 │              │                    └─ 返回 proxyA
+     │                 │              │                    └─ [09] ProxyFactory / DefaultAopProxyFactory
+     │                 │              │                       对应正文：09 ProxyFactory 和 DefaultAopProxyFactory：选择 JDK 还是 CGLIB
+     │                 │              │                       作用：选择 JDK 动态代理或 CGLIB 代理，返回 proxyA
      │                 │              │
-     │                 │              └─ [10] getSingleton("a") 收到 earlyA
+     │                 │              └─ getSingleton("a") 收到 earlyA
      │                 │                 earlyA：rawA 或 proxyA
      │                 │                 作用：放入 earlySingletonObjects，并移除 singletonFactories 中的 ObjectFactory
      │                 │                 │
@@ -213,12 +226,12 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │                    └─ getSingleton("b", ObjectFactory) 外层完成后调用 addSingleton("b", exposedB)
      │                       作用：B 进入 singletonObjects 一级缓存，并清理 B 的 singletonFactories / earlySingletonObjects
      │
-     ├─ [11] A 拿到 B 后继续完成
+     ├─ A 拿到 B 后继续完成
      │  │
      │  ├─ A.b = B
      │  ├─ populateBean("a") 完成
      │  ├─ initializeBean("a") 完成
-     │  ├─ [11.1] getSingleton("a", false)
+     │  ├─ getSingleton("a", false)
      │  │        方法定义在：AbstractAutowireCapableBeanFactory#doCreateBean
      │  │        作用：检查 A 是否已经因为循环依赖被提前拿过早期引用
      │  │        注意：allowEarlyReference=false，不会再次触发 singletonFactory.getObject()
@@ -231,22 +244,29 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │  └─ getSingleton("a", ObjectFactory) 外层完成后调用 addSingleton("a", exposedA)
      │     作用：A 进入 singletonObjects 一级缓存，并清理 A 的 singletonFactories / earlySingletonObjects
      │
-     └─ [12] 后续业务代码调用 A 的方法
+     ├─ [10] JdkDynamicAopProxy::invoke(...)
+     │  对应正文：10 JdkDynamicAopProxy：JDK 代理被调用时才进入增强链
+     │  作用：JDK 代理对象被调用时进入这里
+     │  │
+     │  └─ 继续进入 [12]
+     │
+     ├─ [11] CglibAopProxy 的 MethodInterceptor::intercept(...)
+     │  对应正文：11 CglibAopProxy：CGLIB 代理也是同一套 proceed 链路
+     │  作用：CGLIB 代理对象被调用时进入这里
+     │  │
+     │  └─ 继续进入 [12]
+     │
+     └─ [12] getInterceptorsAndDynamicInterceptionAdvice(method, targetClass)
+        对应正文：12 AdvisedSupport 和 DefaultAdvisorChainFactory：Advisor 变成 MethodInterceptor 链
+        作用：根据当前方法筛选 MethodInterceptor 链
         │
-        ├─ 如果 A 不需要代理
-        │  │
-        │  └─ 直接调用 rawA 的方法
-        │
-        └─ 如果 A 需要代理
+        └─ [13] ReflectiveMethodInvocation::proceed()
+           对应正文：13 ReflectiveMethodInvocation：proceed 怎么执行增强和目标方法
+           作用：依次执行拦截器，最后调用原始 rawA 的目标方法
            │
-           ├─ JDK 动态代理：JdkDynamicAopProxy::invoke(...)
-           └─ CGLIB 代理：CglibAopProxy 的 MethodInterceptor::intercept(...)
-              │
-              └─ getInterceptorsAndDynamicInterceptionAdvice(method, targetClass)
-                 作用：根据当前方法筛选 MethodInterceptor 链
-                 │
-                 └─ ReflectiveMethodInvocation::proceed()
-                    作用：依次执行拦截器，最后调用原始 rawA 的目标方法
+           └─ [14] 回到三级缓存职责
+              对应正文：14 回到三级缓存：为什么第三级缓存要存 ObjectFactory
+              作用：把 singletonFactories、earlySingletonObjects、singletonObjects 的职责重新合起来
 ```
 
 ## 正文
