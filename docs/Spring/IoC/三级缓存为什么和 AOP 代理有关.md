@@ -106,6 +106,11 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
 
 ## 全局导图：从 addSingletonFactory 到代理方法调用
 
+> [!note] 前置流程在哪里看
+> 本文从 `doCreateBean("a")` 内部开始追，因为三级缓存和 AOP 代理的连接点发生在 `addSingletonFactory(...)` 之后。
+>
+> 如果要先看 `doCreateBean("a")` 之前是怎么走到这里的，回到 [[4、依赖注入(DI)#全局导图：从触发 getBean 到属性写入]]。当前图里的 `[00] beanFactory::doCreateBean("a")`，对应那篇导图里的 `[04] beanFactory::doCreateBean(...)`。
+
 > [!note] 读这张图时先盯住两个时间点
 > `addSingletonFactory(...)` 只是把 ObjectFactory 存进去，不执行 lambda。
 > 只有 B 回头找正在创建中的 A 时，`getSingleton("a")` 才会执行 ObjectFactory。

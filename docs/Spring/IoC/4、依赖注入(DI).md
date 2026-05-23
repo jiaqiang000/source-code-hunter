@@ -132,6 +132,13 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
 > - [[循环依赖]]：发生在 Bean 创建和属性填充过程中，尤其是 `addSingletonFactory()`、递归 `getBean(refName)`、`getSingleton()` 这些位置。
 > - [[BeanPostProcessor]]：参与 Bean 创建过程中的多个扩展点，包括提前代理、属性注入、初始化前后处理，AOP/事务代理也会走这条线。
 
+> [!note] 从这张图跳到专题
+> 这张图负责把 `refresh()` / `getBean()` / `doGetBean()` / `createBean()` / `doCreateBean()` 的前置主流程串起来。
+>
+> 如果读到 `[04.3] addSingletonFactory(...)`、`[04.4.5] RuntimeBeanReference` 递归 `getBean(refName)`、`[02.2] getSingleton(beanName)` 时想看循环依赖，就跳到 [[循环依赖]]。
+>
+> 如果问题进一步变成“为什么三级缓存里要放 `ObjectFactory`，以及 AOP 代理为什么会参与早期引用”，再跳到 [[三级缓存为什么和 AOP 代理有关]]。
+
 ```text
 [00] Bean 创建触发入口
      │
