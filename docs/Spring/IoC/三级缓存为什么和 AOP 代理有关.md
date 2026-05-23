@@ -295,7 +295,32 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
               │
               └─ [13] ReflectiveMethodInvocation::proceed()
                  对应正文：13 ReflectiveMethodInvocation：proceed 怎么执行增强和目标方法
-                 作用：依次执行拦截器，最后调用原始 rawA 的目标方法
+                 作用：用 currentInterceptorIndex 推进拦截器链；每个拦截器通过 proceed() 把调用权交给下一层
+                 模型：拦截器链一层层包住目标方法，不是简单“先全部前置，再目标方法，再全部后置”
+                 │
+                 ├─ currentInterceptorIndex 初始为 -1
+                 │
+                 ├─ 第一次 proceed()
+                 │  └─ Interceptor1::invoke(invocation)
+                 │     │
+                 │     ├─ Interceptor1 前置逻辑
+                 │     ├─ invocation.proceed()
+                 │     │  │
+                 │     │  └─ Interceptor2::invoke(invocation)
+                 │     │     │
+                 │     │     ├─ Interceptor2 前置逻辑
+                 │     │     ├─ invocation.proceed()
+                 │     │     │  │
+                 │     │     │  └─ 所有拦截器执行完
+                 │     │     │     └─ invokeJoinpoint()
+                 │     │     │        └─ rawA.method()
+                 │     │     │
+                 │     │     └─ Interceptor2 后置逻辑
+                 │     │
+                 │     └─ Interceptor1 后置逻辑
+                 │
+                 ├─ 如果某个 Interceptor 不调用 invocation.proceed()
+                 │  └─ 后面的拦截器和 rawA.method() 可能不会执行
                  │
                  └─ [14] 回到三级缓存职责
                     对应正文：14 回到三级缓存：为什么第三级缓存要存 ObjectFactory
@@ -2043,6 +2068,38 @@ Advisor
 
 ### 13 ReflectiveMethodInvocation：proceed 怎么执行增强和目标方法
 
+先把执行模型放清楚：`proceed()` 的本质不是“把所有拦截器依次执行完再调用目标方法”，而是每个 `MethodInterceptor` 通过 `invocation.proceed()` 把调用权交给下一个拦截器。
+
+目标方法被最里面那层 `invokeJoinpoint()` 调用，返回后再一层层回到外层拦截器。
+
+```text
+Interceptor1 前置逻辑
+  -> invocation.proceed()
+     Interceptor2 前置逻辑
+       -> invocation.proceed()
+          Interceptor3 前置逻辑
+            -> invocation.proceed()
+               -> invokeJoinpoint()
+                  -> rawA.method()
+            <- Interceptor3 后置逻辑
+       <- Interceptor2 后置逻辑
+  <- Interceptor1 后置逻辑
+```
+
+所以它更像一层层包住目标方法：
+
+```text
+Interceptor1(
+  Interceptor2(
+    Interceptor3(
+      rawA.method()
+    )
+  )
+)
+```
+
+如果某个 `MethodInterceptor` 不调用 `invocation.proceed()`，后面的拦截器和 `rawA.method()` 甚至可以不执行。
+
 ```java
 public Object proceed() throws Throwable {
     if (this.currentInterceptorIndex == this.interceptorsAndDynamicMethodMatchers.size() - 1) {
@@ -2134,4 +2191,3 @@ target.method(args)
 并且给 BeanPostProcessor/AOP 一个机会，
 决定这个早期引用应该是原始对象还是代理对象。
 ```
-
