@@ -1165,29 +1165,55 @@ SingletonTargetSource 内部持有 rawA
 rawA
   关系：createBeanInstance() 刚实例化出来的原始对象
   │
-  └─ new SingletonTargetSource(rawA)
-     关系：TargetSource 的一种实现，内部固定持有 rawA
-     │
-     └─ ProxyFactory / AdvisedSupport
-        关系：保存代理配置，不是最终业务代理对象
-        保存：
-          - targetSource = SingletonTargetSource(rawA)
-          - advisors = 当前 Bean 命中的增强规则
-          - interfaces / proxyTargetClass / exposeProxy 等代理配置
-        │
-        └─ DefaultAopProxyFactory
-           关系：根据代理配置选择代理技术
-           │
-           ├─ JDK：JdkDynamicAopProxy
-           │   关系：InvocationHandler，负责处理 JDK 代理对象的方法调用
-           │   结果：运行时生成 $Proxy... 对象，也就是 proxyA
-           │   后续：proxyA.method() 进入 10 JdkDynamicAopProxy::invoke(...)
-           │
-           └─ CGLIB：ObjenesisCglibAopProxy / CglibAopProxy
-               关系：负责创建目标类的 CGLIB 子类代理
-               结果：运行时生成 Xxx$$EnhancerBySpringCGLIB$$... 对象，也就是 proxyA
-               后续：proxyA.method() 进入 11 CglibAopProxy::intercept(...)
+  └─ SingletonTargetSource(rawA)
+      关系：TargetSource 的一种实现
+      持有：target = rawA
+      作用：后续代理方法调用时，通过 getTarget() 返回 rawA
+      │
+      └─ ProxyFactory
+          关系：代理配置对象 + 代理创建入口，不是最终业务代理对象
+          │
+          ├─ 继承得到的配置能力
+          │   ProxyFactory
+          │     extends ProxyCreatorSupport
+          │       extends AdvisedSupport
+          │         extends ProxyConfig
+          │
+          │   因为 ProxyFactory 继承了 AdvisedSupport，所以同一个 ProxyFactory 对象里保存着：
+          │     - targetSource = SingletonTargetSource(rawA)
+          │     - advisors = 当前 Bean 命中的增强规则
+          │     - interfaces = 需要实现的接口
+          │     - proxyTargetClass / exposeProxy 等代理配置
+          │     - advisorChainFactory = DefaultAdvisorChainFactory
+          │
+          └─ 通过父类 ProxyCreatorSupport 持有代理创建策略
+              持有：aopProxyFactory = DefaultAopProxyFactory
+              │
+              └─ ProxyFactory.getProxy(classLoader)
+                  │
+                  └─ ProxyCreatorSupport.createAopProxy()
+                      │
+                      └─ DefaultAopProxyFactory.createAopProxy(this)
+                          这里的 this 是当前 ProxyFactory。
+                          因为 ProxyFactory 继承了 AdvisedSupport，
+                          所以 this 会作为 AdvisedSupport 配置传给 DefaultAopProxyFactory。
+                          │
+                          ├─ 根据 config 选择 JDK
+                          │   └─ new JdkDynamicAopProxy(config)
+                          │       └─ getProxy(classLoader)
+                          │           └─ 运行时生成 $Proxy... 对象，也就是 proxyA
+                          │               └─ proxyA.method() 进入 10 JdkDynamicAopProxy::invoke(...)
+                          │
+                          └─ 根据 config 选择 CGLIB
+                              └─ new ObjenesisCglibAopProxy(config)
+                                  └─ getProxy(classLoader)
+                                      └─ 运行时生成 Xxx$$EnhancerBySpringCGLIB$$... 对象，也就是 proxyA
+                                          └─ proxyA.method() 进入 11 CglibAopProxy::intercept(...)
 ```
+
+所以这里不是 `ProxyFactory -> AdvisedSupport` 两个并列对象。
+
+更准确地说，`ProxyFactory` 通过继承拥有 `AdvisedSupport` 的配置能力，又通过父类 `ProxyCreatorSupport` 持有 `DefaultAopProxyFactory`。最后 `ProxyFactory` 把自己作为 `AdvisedSupport config` 交给 `DefaultAopProxyFactory`，由它选择 JDK 还是 CGLIB。
 
 所以 `createProxy(...)` 不是把 `rawA` 改没了。
 
@@ -1217,9 +1243,10 @@ AServiceImpl$$EnhancerBySpringCGLIB$$xxxx
 ```text
 ProxyFactory.getProxy()
   -> ProxyCreatorSupport.createAopProxy()
-    -> DefaultAopProxyFactory.createAopProxy()
-      -> JdkDynamicAopProxy 或 ObjenesisCglibAopProxy
-        -> 运行时生成 proxyA
+    -> DefaultAopProxyFactory.createAopProxy(this)
+       这里的 this 是 ProxyFactory，也是 AdvisedSupport 配置对象
+      -> JdkDynamicAopProxy(config) 或 ObjenesisCglibAopProxy(config)
+        -> getProxy(classLoader) 运行时生成 proxyA
 ```
 
 ```java
