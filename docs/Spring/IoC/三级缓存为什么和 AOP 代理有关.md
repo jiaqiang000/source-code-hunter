@@ -310,13 +310,29 @@ earlyProxyReferences 到底存的是什么？
 多个增强是不是就等于代理包代理？
 ```
 
-### BeanPostProcessor 是什么：初始化阶段允许替换 Bean 的扩展点
+### BeanPostProcessor 是什么：初始化前后可处理、也可替换 Bean 的扩展点
 
-`BeanPostProcessor` 是 Spring Bean 创建过程里的扩展点，不是业务方法拦截器。
+这里先说普通 `BeanPostProcessor`。
 
-它可以在 Bean 初始化前后处理 Bean。一般 `BeanPostProcessor` 不一定会包装 Bean，更常见的是做初始化前后的处理，比如检查标记接口、填充某些字段、处理注解元数据、注册内部状态等。
+它是 Spring Bean 创建过程里的扩展点，不是业务方法拦截器。普通 `BeanPostProcessor` 主要围绕 Bean 初始化前后工作：
 
-但是它的能力很大：它可以返回原对象，也可以返回一个新对象。只有返回新对象时，才叫“包装”。
+```java
+postProcessBeforeInitialization(...)
+postProcessAfterInitialization(...)
+```
+
+这个阶段一般发生在 Bean 已经实例化、属性也基本填充完之后。
+
+它可以只做处理并返回原对象，比如检查标记接口、处理注解元数据、注册内部状态等；也可以返回一个新对象，比如包装对象或代理对象。
+
+所以不要把 `BeanPostProcessor` 直接理解成“专门用来创建代理”的东西。更准确是：
+
+```text
+BeanPostProcessor 是初始化前后扩展点；
+它可以只处理对象，也可以替换对象。
+```
+
+后面的 `AbstractAutoProxyCreator` 比普通 `BeanPostProcessor` 更特殊，因为它实现的是 `SmartInstantiationAwareBeanPostProcessor`，所以除了初始化后代理，还能参与循环依赖里的早期引用。
 
 源码里关键点是：
 
