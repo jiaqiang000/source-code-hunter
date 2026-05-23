@@ -89,6 +89,78 @@ initializeBean()
   -> BeanPostProcessor.postProcessAfterInitialization(...)
 ```
 
+## resolveBeforeInstantiation 常见吗：业务项目一般不用自己扩展
+
+问题是：
+
+`resolveBeforeInstantiation` 是需要自己扩展的吗？本地代码有这样做的吗？常见吗？一般在什么情况下使用？
+
+不需要你自己扩展。准确说：
+
+`resolveBeforeInstantiation()` 是 Spring 内部方法，你不会自己调用它。
+如果你真想参与这个入口，才需要自己写一个 `InstantiationAwareBeanPostProcessor`，重写 `postProcessBeforeInstantiation(...)`。
+
+但这个入口不常见，尤其在业务项目里很少自己写。
+
+本地业务项目里没看到业务代码直接实现：
+
+```java
+InstantiationAwareBeanPostProcessor
+SmartInstantiationAwareBeanPostProcessor
+postProcessBeforeInstantiation
+```
+
+本地常见的是普通 `BeanPostProcessor`，例如：
+
+- [RequestAuthInfoAnnotationBeanPostProcessor.java](/Users/luojiaqiang/IdeaProjects/gateway&commons-web&bookln/commons-web/commons-web-servlet/src/main/java/com/cqtouch/web/auth/RequestAuthInfoAnnotationBeanPostProcessor.java:18)
+  `implements BeanPostProcessor`，在初始化前扫描 `@RequestAuthInfo`，整理 `uri -> AuthInfo`。
+
+- [RequestParamsProcessor.java](/Users/luojiaqiang/IdeaProjects/slt/app/src/main/java/com/yunti/boot/slt/processor/RequestParamsProcessor.java:22)
+  `implements BeanPostProcessor`，在初始化后扫描 Controller 参数规则。
+
+- [RequestMappingHandlerMappingBeanPostProcessor.java](/Users/luojiaqiang/IdeaProjects/gateway/src/main/java/com/yunti/boot/gateway/beans/processor/RequestMappingHandlerMappingBeanPostProcessor.java:7)
+  `implements BeanPostProcessor`，调整 `RequestMappingHandlerMapping` 的 order。
+
+这些都不是 `resolveBeforeInstantiation` 那条路。
+
+更基础地说，Spring 创建 Bean 时是这样问的：
+
+```text
+createBean("a")
+  -> resolveBeforeInstantiation("a")
+     -> 遍历 InstantiationAwareBeanPostProcessor
+     -> 调用 postProcessBeforeInstantiation(beanClass, beanName)
+        -> 如果返回 null：继续正常创建 Bean
+        -> 如果返回非 null：直接拿这个对象当 Bean，跳过普通实例化
+```
+
+Spring 源码里也写得很清楚：`postProcessBeforeInstantiation` 是特殊用途，主要给框架内部用，普通场景尽量实现普通 `BeanPostProcessor` 就行。位置在 [InstantiationAwareBeanPostProcessor.java](/Users/luojiaqiang/IdeaProjects/spring-source-study/spring-framework/spring-beans/src/main/java/org/springframework/beans/factory/config/InstantiationAwareBeanPostProcessor.java:35)。
+
+所以你可以这样建立直觉：
+
+```text
+BeanPostProcessor：
+  常见。
+  Bean 已经创建出来了，你在初始化前后看一眼、改一改、记录元数据、甚至返回代理。
+
+InstantiationAwareBeanPostProcessor：
+  更底层。
+  可以插到实例化前、实例化后、属性填充前。
+  业务项目很少自己写。
+
+postProcessBeforeInstantiation：
+  更特殊。
+  Bean 还没有 new 出来。
+  你如果返回一个对象，Spring 就不再正常 new 原始 Bean。
+```
+
+普通 AOP / `@Transactional` 一般也不是靠这里直接创建代理。你本地 Spring 源码里的 `AbstractAutoProxyCreator#postProcessBeforeInstantiation(...)` 确实有这个方法，但它主要在有 custom `TargetSource` 时才提前创建代理；正常事务/AOP 更常见是在 `postProcessAfterInitialization(...)` 创建代理，循环依赖时才走 `getEarlyBeanReference(...)`。
+
+所以结论是：
+
+`resolveBeforeInstantiation` 要认识，但先不用重点学怎么自定义。
+你现在更应该重点掌握的是普通 `BeanPostProcessor`、`populateBean()`、`initializeBean()`、`postProcessAfterInitialization()`、以及循环依赖里的 `getEarlyBeanReference()`。
+
 ## 为什么实现子接口后就能在对应阶段运行
 
 不是接口继承本身有魔法，而是 Spring 源码在不同阶段显式遍历处理器列表，并用 `instanceof` 判断它有没有实现某个更具体的接口。
