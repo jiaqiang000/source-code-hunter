@@ -257,6 +257,7 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │  │                 也不是跳过所有 BeanPostProcessor
      │  ├─ getSingleton("a", false)
      │  │        方法定义在：AbstractAutowireCapableBeanFactory#doCreateBean
+     │  │        对应正文：09.1 回到 doCreateBean：用 earlyA 作为最终 exposedObject
      │  │        作用：检查 A 是否已经因为循环依赖被提前拿过早期引用
      │  │        注意：allowEarlyReference=false，不会再次触发 singletonFactory.getObject()
      │  │        │
@@ -271,10 +272,11 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      └─ Bean 创建结束
         │
         └─ 后续运行时：只有业务代码调用 proxyA.method() 时，才进入 10-13
-           说明：09 为止只是创建出 proxyA；事务、日志切面、权限切面和 rawA.method()
-                 都不会在 createProxy() 时执行，而是在这里的业务方法调用时执行
+           说明：09 创建出 proxyA，09.1 保证最终暴露对象和早期注入对象一致；
+                 事务、日志切面、权限切面和 rawA.method() 都不会在 createProxy() 时执行，
+                 而是在这里的业务方法调用时执行
            边界：10-13 不是 Bean 创建过程本身，而是 Bean 创建完成后的代理方法调用链路
-           Web 请求入口可以对照：09.1 从请求到代理 invoke/intercept 的调用链
+           Web 请求入口可以对照：09.2 从请求到代理 invoke/intercept 的调用链
            注意：如果前面返回的是 rawA 而不是 proxyA，就没有 JDK/CGLIB 代理调用入口
            │
            ├─ [10] JdkDynamicAopProxy::invoke(...)
@@ -1807,9 +1809,99 @@ exposeProxy
 
 区别在于代理对象的方法调用入口不同。
 
-### 09.1 从请求到代理 invoke/intercept 的调用链
+### 09.1 回到 doCreateBean：用 earlyA 作为最终 exposedObject
 
-到 09 为止，Spring 只是把代理对象创建出来了。
+08/09 讲的是早期引用路径里可能创建出 `proxyA`。
+
+但是创建出 `proxyA` 还不等于 A 这个 Bean 的创建流程结束了。B 拿到 `earlyA` 之后，调用栈会回到 A 自己的 `doCreateBean(...)`，A 还要继续完成 `populateBean(...)`、`initializeBean(...)` 和最后的单例注册。
+
+这时 `doCreateBean(...)` 收尾处会做一个检查：
+
+```java
+if (earlySingletonExposure) {
+    Object earlySingletonReference = getSingleton(beanName, false);
+    if (earlySingletonReference != null) {
+        if (exposedObject == bean) {
+            exposedObject = earlySingletonReference;
+        }
+        else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+            // 这里省略异常处理分支
+        }
+    }
+}
+```
+
+这里对应全局导图里的：
+
+```text
+getSingleton("a", false)
+  -> 如果拿到 earlyA，并且 exposedObject 还是 rawA
+     -> exposedObject = earlyA
+```
+
+注意这里的 `allowEarlyReference=false`。
+
+它不会再次触发三级缓存里的 `ObjectFactory`，也不会再次执行：
+
+```java
+getEarlyBeanReference(...)
+```
+
+它只是检查前面是否已经有人因为循环依赖提前拿过 A 的早期引用。
+
+如果 B 前面确实回头找过 A，那么在 `03 getSingleton("a")` 里已经发生过：
+
+```text
+singletonFactory.getObject()
+  -> 得到 earlyA
+  -> earlySingletonObjects.put("a", earlyA)
+  -> singletonFactories.remove("a")
+```
+
+所以这里的 `getSingleton("a", false)` 能从 `earlySingletonObjects` 里拿到同一个 `earlyA`。
+
+如果 A 需要代理：
+
+```text
+earlyA = proxyA
+B.a = proxyA
+```
+
+那么这里会把：
+
+```text
+exposedObject = rawA
+```
+
+替换成：
+
+```text
+exposedObject = proxyA
+```
+
+这样最终放入一级缓存、对外暴露的 A，和之前注入给 B 的 A 是同一个对象。
+
+这一步解决的是一致性问题：
+
+```text
+B.a 已经拿到了 earlyA；
+容器最终暴露出去的 A 也应该是同一个 earlyA。
+```
+
+否则就会出现：
+
+```text
+B.a 是 proxyA
+applicationContext.getBean("a") 又是 rawA 或另一个对象
+```
+
+这就会破坏 Spring 单例 Bean 对外引用的一致性。
+
+### 09.2 从请求到代理 invoke/intercept 的调用链
+
+到 09.1 为止，Bean 创建流程里已经保证最终暴露的 A 和前面注入给 B 的早期 A 保持一致。
+
+但是 AOP 增强逻辑仍然还没有执行。
 
 如果 A 需要代理，此时得到的是：
 
