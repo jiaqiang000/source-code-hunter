@@ -283,7 +283,7 @@ Object bean = instanceWrapper.getWrappedInstance();
 所以它不是完整 Bean，只能叫 `raw bean` 或早期对象。
 
 ### 01 AbstractAutowireCapableBeanFactory：addSingletonFactory 只是登记早期引用工厂
-
+addSingletonFactory 在3级缓存中什么位置可以查看[[循环依赖#三级缓存分别负责什么]]
 ```java
 // 只有单例、允许循环依赖、并且当前 Bean 正在创建中，才需要提前暴露。
 boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
