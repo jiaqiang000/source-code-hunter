@@ -139,6 +139,113 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
 >
 > 如果问题进一步变成“为什么三级缓存里要放 `ObjectFactory`，以及 AOP 代理为什么会参与早期引用”，再跳到 [[三级缓存为什么和 AOP 代理有关]]。
 
+> [!note] 先把 `[02.6]` 的 scope 分支和源码对应起来
+> 能对应，正好对应你导图里的这一段：
+>
+> ```text
+> [02.6] 按 scope 创建 Bean
+>   ├─ singleton -> getSingleton(beanName, ObjectFactory)
+>   ├─ prototype -> 直接创建
+>   └─ request/session 等自定义 scope -> scope.get(... ObjectFactory ...)
+> ```
+>
+> 这三行不是新概念，它就是 Spring 源码里 `doGetBean()` 的分支判断。
+>
+> 你可以把它理解成：
+>
+> ```text
+> Spring 已经拿到 BeanDefinition 了。
+> 现在要决定：这个 Bean 到底按哪种 scope 创建？
+> ```
+>
+> 源码大概是：
+>
+> ```java
+> if (mbd.isSingleton()) {
+>     getSingleton(beanName, () -> createBean(beanName, mbd, args));
+> }
+> else if (mbd.isPrototype()) {
+>     createBean(beanName, mbd, args);
+> }
+> else {
+>     scope.get(beanName, () -> createBean(beanName, mbd, args));
+> }
+> ```
+>
+> 对应关系是：
+>
+> ```text
+> mbd.isSingleton()
+>   -> 导图里的 singleton -> getSingleton(beanName, ObjectFactory)
+>
+> mbd.isPrototype()
+>   -> 导图里的 prototype -> 直接创建
+>
+> 其他 scope，比如 request/session
+>   -> 导图里的 request/session 等自定义 scope -> scope.get(... ObjectFactory ...)
+> ```
+>
+> 这里的 `ObjectFactory` 你可以先理解成：
+>
+> ```text
+> 一个“需要时才真正创建 Bean”的回调/工厂。
+> ```
+>
+> 比如 singleton 分支：
+>
+> ```java
+> getSingleton(beanName, () -> createBean(beanName, mbd, args))
+> ```
+>
+> 意思不是马上无脑创建，而是：
+>
+> ```text
+> 先进入 getSingleton
+>   -> 如果一级缓存里已经有这个单例 Bean，就直接返回
+>   -> 如果没有，才执行 ObjectFactory
+>   -> ObjectFactory 里面才调用 createBean(...)
+> ```
+>
+> 所以在导图里：
+>
+> ```text
+> singleton -> getSingleton(beanName, ObjectFactory)
+> ```
+>
+> 更完整地说是：
+>
+> ```text
+> singleton
+>   -> 先走单例缓存管理
+>   -> 需要创建时，才通过 ObjectFactory 调 createBean(...)
+> ```
+>
+> 而 prototype 是：
+>
+> ```text
+> prototype
+>   -> 不查单例缓存
+>   -> 不放单例缓存
+>   -> 每次直接 createBean(...)
+> ```
+>
+> 其他 scope，比如 session/request 是：
+>
+> ```text
+> session/request
+>   -> 先交给对应 Scope 对象
+>   -> Scope 自己决定当前 request/session 里有没有这个 Bean
+>   -> 没有时才执行 ObjectFactory 创建
+> ```
+>
+> 所以你的导图里这三行是对的，只是 `prototype -> 直接创建` 可以更明确一点理解成：
+>
+> ```text
+> prototype -> createBean(...)
+> ```
+>
+> 这样和源码更对应。
+
 ```text
 [00] Bean 创建触发入口
      │
