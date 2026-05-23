@@ -2135,34 +2135,3 @@ target.method(args)
 决定这个早期引用应该是原始对象还是代理对象。
 ```
 
-## 这一篇最终要记住什么
-
-```text
-1. addSingletonFactory 只把 ObjectFactory 放进三级缓存，不执行 lambda。
-
-2. B 回头找 A 时，getSingleton 才会执行 singletonFactory.getObject()。
-
-3. ObjectFactory.getObject() 会进入 getEarlyBeanReference。
-
-4. getEarlyBeanReference 会遍历 SmartInstantiationAwareBeanPostProcessor。
-
-5. AbstractAutoProxyCreator 可以在这里提前创建 AOP 代理。
-
-6. 如果 A 最终应该是代理对象，那么 B.a 也必须拿到代理对象，而不是原始对象。
-
-7. createProxy 只创建代理对象，不执行目标方法。
-
-8. 代理对象被调用时，才进入 JDK invoke 或 CGLIB intercept。
-
-9. invoke/intercept 会筛选 MethodInterceptor 链。
-
-10. ReflectiveMethodInvocation.proceed() 依次执行拦截器，最后调用原始目标方法。
-```
-
-一句话总结：
-
-```text
-三级缓存解决的不只是“提前拿到 A”，
-更关键的是在 AOP/事务代理场景下，
-提前拿到“正确的 A”。
-```
