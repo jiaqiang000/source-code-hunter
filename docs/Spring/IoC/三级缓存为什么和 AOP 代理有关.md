@@ -188,38 +188,43 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │                 │              │     │
      │                 │              │     └─ 遍历 SmartInstantiationAwareBeanPostProcessor
      │                 │              │        │
-     │                 │              │        ├─ [05] SmartInstantiationAwareBeanPostProcessor::getEarlyBeanReference(...)
-     │                 │              │        │  对应正文：05 SmartInstantiationAwareBeanPostProcessor：默认什么都不做
-     │                 │              │        │  作用：默认返回原始对象 rawA
-     │                 │              │        │
-     │                 │              │        └─ [06] AbstractAutoProxyCreator::getEarlyBeanReference(rawA, "a")
-     │                 │              │           对应正文：06 AbstractAutoProxyCreator：AOP 场景提前创建代理
-     │                 │              │           作用：AOP 场景提前尝试生成代理
+     │                 │              │        └─ [05] 遍历 SmartInstantiationAwareBeanPostProcessor 扩展点
+     │                 │              │           对应正文：05 SmartInstantiationAwareBeanPostProcessor：早期引用扩展点
+     │                 │              │           关系：这是 Spring 留给后处理器改写早期引用的接口
+     │                 │              │           作用：让每个处理器都有机会把 earlyA 从 rawA 改成包装对象
      │                 │              │           │
-     │                 │              │           └─ [07] wrapIfNecessary(rawA, "a", cacheKey)
-     │                 │              │              对应正文：07 AbstractAutoProxyCreator：wrapIfNecessary 判断是否需要代理
-     │                 │              │              作用：判断 A 是否需要被代理
+     │                 │              │           ├─ 默认接口实现
+     │                 │              │           │  作用：不改对象，直接返回传入的 bean
+     │                 │              │           │
+     │                 │              │           └─ [06] AbstractAutoProxyCreator::getEarlyBeanReference(rawA, "a")
+     │                 │              │              对应正文：06 AbstractAutoProxyCreator：AOP 场景提前创建代理
+     │                 │              │              关系：它是 SmartInstantiationAwareBeanPostProcessor 的一个实现
+     │                 │              │              作用：AOP/事务场景下，可能把 rawA 提前包装成 proxyA
      │                 │              │              │
-     │                 │              │              ├─ 不需要代理
-     │                 │              │              │  │
-     │                 │              │              │  └─ 返回 rawA
-     │                 │              │              │     结果：B.a = rawA
-     │                 │              │              │     注意：后面 initializeBean() 仍会执行，BeanPostProcessor 初始化后回调也仍会执行；
-     │                 │              │              │           这里只是 AbstractAutoProxyCreator 不会再对 A 重复创建 AOP 代理
-     │                 │              │              │
-     │                 │              │              └─ 需要代理
+     │                 │              │              └─ [07] wrapIfNecessary(rawA, "a", cacheKey)
+     │                 │              │                 对应正文：07 AbstractAutoProxyCreator：wrapIfNecessary 判断是否需要代理
+     │                 │              │                 作用：判断 A 是否需要被代理
      │                 │              │                 │
-     │                 │              │                 └─ [08] createProxy(beanClass, beanName, advisors, SingletonTargetSource(rawA))
-     │                 │              │                    对应正文：08 AbstractAutoProxyCreator：createProxy 只是创建代理，不执行方法
-     │                 │              │                    作用：创建代理对象 proxyA
-     │                 │              │                    注意：这里只创建代理，不执行目标方法
+     │                 │              │                 ├─ 不需要代理
+     │                 │              │                 │  │
+     │                 │              │                 │  └─ 返回 rawA
+     │                 │              │                 │     结果：B.a = rawA
+     │                 │              │                 │     注意：后面 initializeBean() 仍会执行，BeanPostProcessor 初始化后回调也仍会执行；
+     │                 │              │                 │           这里只是 AbstractAutoProxyCreator 不会再对 A 重复创建 AOP 代理
+     │                 │              │                 │
+     │                 │              │                 └─ 需要代理
      │                 │              │                    │
-     │                 │              │                    └─ [09] ProxyFactory / DefaultAopProxyFactory
-     │                 │              │                       对应正文：09 ProxyFactory 和 DefaultAopProxyFactory：选择 JDK 还是 CGLIB
-     │                 │              │                       作用：选择 JDK 动态代理或 CGLIB 代理，返回 proxyA
-     │                 │              │                       结果：B.a = proxyA
-     │                 │              │                       注意：后面 initializeBean() 仍会执行；
-     │                 │              │                             这里只是 AbstractAutoProxyCreator 不会再对 A 重复创建另一个 AOP 代理
+     │                 │              │                    └─ [08] createProxy(beanClass, beanName, advisors, SingletonTargetSource(rawA))
+     │                 │              │                       对应正文：08 AbstractAutoProxyCreator：createProxy 只是创建代理，不执行方法
+     │                 │              │                       作用：创建代理对象 proxyA
+     │                 │              │                       注意：这里只创建代理，不执行目标方法
+     │                 │              │                       │
+     │                 │              │                       └─ [09] ProxyFactory / DefaultAopProxyFactory
+     │                 │              │                          对应正文：09 ProxyFactory 和 DefaultAopProxyFactory：选择 JDK 还是 CGLIB
+     │                 │              │                          作用：选择 JDK 动态代理或 CGLIB 代理，返回 proxyA
+     │                 │              │                          结果：B.a = proxyA
+     │                 │              │                          注意：后面 initializeBean() 仍会执行；
+     │                 │              │                                这里只是 AbstractAutoProxyCreator 不会再对 A 重复创建另一个 AOP 代理
      │                 │              │
      │                 │              └─ getSingleton("a") 收到 earlyA
      │                 │                 earlyA：rawA 或 proxyA
@@ -565,25 +570,38 @@ exposedObject = bp.getEarlyBeanReference(exposedObject, beanName);
 
 因为这是处理链。前一个后处理器返回什么，下一个后处理器就基于什么继续处理。
 
-### 05 SmartInstantiationAwareBeanPostProcessor：默认什么都不做
+### 05 SmartInstantiationAwareBeanPostProcessor：早期引用扩展点
 
-`SmartInstantiationAwareBeanPostProcessor` 的默认实现是：
+`SmartInstantiationAwareBeanPostProcessor` 在这里不是一个具体处理器，而是一类扩展点。
+
+它给后处理器一个机会：
+
+```text
+在 Bean 还没有完整初始化之前，
+先决定要暴露给其他 Bean 的早期引用是什么。
+```
+
+默认接口实现是：
 
 ```java
 default Object getEarlyBeanReference(Object bean, String beanName) throws BeansException {
-    // 默认实现不做包装，直接返回原始对象。
-    // AOP 的关键是 AbstractAutoProxyCreator 会重写这个方法。
+    // 默认实现不改对象，直接返回传入的 bean。
     return bean;
 }
 ```
 
-所以不是所有后处理器都会创建代理。
-
-普通情况下，它可能什么都不做：
+所以默认情况下：
 
 ```text
 输入 rawA
 输出 rawA
+```
+
+这说明两件事：
+
+```text
+1. getEarlyBeanReference 不等于一定创建代理。
+2. 真正会不会改写早期引用，要看具体实现类。
 ```
 
 真正和 AOP 代理有关的是它的实现类，比如：
