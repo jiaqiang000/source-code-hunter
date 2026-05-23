@@ -271,6 +271,10 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      └─ Bean 创建结束
         │
         └─ 后续运行时：只有业务代码调用 proxyA.method() 时，才进入 10-13
+           说明：09 为止只是创建出 proxyA；事务、日志切面、权限切面和 rawA.method()
+                 都不会在 createProxy() 时执行，而是在这里的业务方法调用时执行
+           边界：10-13 不是 Bean 创建过程本身，而是 Bean 创建完成后的代理方法调用链路
+           Web 请求入口可以对照：09.1 从请求到代理 invoke/intercept 的调用链
            注意：如果前面返回的是 rawA 而不是 proxyA，就没有 JDK/CGLIB 代理调用入口
            │
            ├─ [10] JdkDynamicAopProxy::invoke(...)
@@ -1777,6 +1781,98 @@ exposeProxy
 ```
 
 区别在于代理对象的方法调用入口不同。
+
+### 09.1 从请求到代理 invoke/intercept 的调用链
+
+到 09 为止，Spring 只是把代理对象创建出来了。
+
+如果 A 需要代理，此时得到的是：
+
+```text
+proxyA
+  持有：TargetSource(rawA)
+  持有：Advisors
+  类型：JDK 代理或 CGLIB 代理
+```
+
+但这时还没有执行事务、日志切面、权限切面，也没有执行 `rawA.method()`。
+
+这些都要等后面真的有业务代码调用代理对象的方法。
+
+如果从一次 Web 请求看，链路大概是：
+
+```text
+HTTP 请求
+  │
+  └─ DispatcherServlet::doDispatch(request, response)
+      作用：Spring MVC 请求总入口；查 handler、选 adapter、执行 controller、处理返回值
+      │
+      ├─ getHandler(request)
+      │   结果：找到当前请求对应的 HandlerExecutionChain
+      │
+      ├─ getHandlerAdapter(handler)
+      │   结果：通常拿到 RequestMappingHandlerAdapter
+      │
+      └─ HandlerAdapter::handle(request, response, handler)
+          │
+          └─ RequestMappingHandlerAdapter::handleInternal(...)
+              │
+              └─ RequestMappingHandlerAdapter::invokeHandlerMethod(...)
+                  作用：为本次 Controller 方法调用准备参数解析器、返回值处理器等
+                  │
+                  └─ ServletInvocableHandlerMethod::invokeAndHandle(...)
+                      │
+                      └─ InvocableHandlerMethod::invokeForRequest(...)
+                          │
+                          ├─ getMethodArgumentValues(...)
+                          │   作用：解析 Controller 方法参数，例如 @RequestParam、@PathVariable、@RequestBody
+                          │
+                          └─ doInvoke(args)
+                              │
+                              └─ method.invoke(getBean(), args)
+                                  作用：反射调用 Controller 方法
+                                  │
+                                  └─ 进入你的 Controller 代码
+                                      │
+                                      └─ orderController.createOrder(...)
+                                          │
+                                          └─ orderService.createOrder()
+                                              说明：orderService 字段是依赖注入进来的对象
+                                              │
+                                              ├─ 如果 orderService 没有被代理
+                                              │   └─ 直接调用 rawService.createOrder()
+                                              │
+                                              └─ 如果 orderService 被 AOP/事务代理
+                                                  └─ 实际调用的是 proxyA.createOrder()
+                                                      │
+                                                      ├─ JDK 动态代理
+                                                      │   └─ $Proxy...::createOrder(...)
+                                                      │       └─ InvocationHandler::invoke(proxy, method, args)
+                                                      │           └─ [10] JdkDynamicAopProxy::invoke(...)
+                                                      │
+                                                      └─ CGLIB 代理
+                                                          └─ Xxx$$EnhancerBySpringCGLIB::createOrder(...)
+                                                              └─ [11] CglibAopProxy::intercept(...)
+```
+
+这里有一个很重要的边界：
+
+```text
+Spring MVC 负责把 HTTP 请求调到 Controller 方法。
+JDK/CGLIB 代理负责在 Controller 调用被代理 Service 方法时接管这次方法调用。
+```
+
+也就是说，`DispatcherServlet` 不会直接调用 `JdkDynamicAopProxy::invoke(...)`。
+
+真正触发 10 或 11 的瞬间，是你的业务代码里发生了这类调用：
+
+```java
+orderService.createOrder();
+```
+
+并且这个 `orderService` 字段里注入的正好是 `proxyA`。
+
+所以 10-13 讲的不是 Bean 创建过程本身，也不是 Spring MVC 请求分发本身，而是 Bean 创建完成后，代理对象被业务方法调用时的运行时链路。
 
 ### 10 JdkDynamicAopProxy：JDK 代理被调用时才进入增强链
 
