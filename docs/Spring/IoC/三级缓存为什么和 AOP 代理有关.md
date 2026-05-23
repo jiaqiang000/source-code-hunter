@@ -414,6 +414,8 @@ postProcessAfterInitialization 也会继续被调用；
 但 AbstractAutoProxyCreator 不会重复给 A 包一层 AOP 代理。
 ```
 
+原因是：在循环依赖场景下，B 回头找 A 时会触发 `getEarlyBeanReference(rawA, "a")`。`AbstractAutoProxyCreator` 在这里会先把 `rawA` 记录到 `earlyProxyReferences`，然后再执行 `wrapIfNecessary(...)` 判断是否要提前创建 `proxyA`。等 A 后面走到 `postProcessAfterInitialization(rawA, "a")` 时，它会发现 `earlyProxyReferences` 里已经记录过同一个 `rawA`，于是不会再次对这个 `rawA` 调用 `wrapIfNecessary(...)` 创建第二个 AOP 代理。
+
 ### earlyProxyReferences 存的是什么
 
 `earlyProxyReferences` 是 `AbstractAutoProxyCreator` 自己的字段，不是三级缓存。
