@@ -298,6 +298,372 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
                     作用：把 singletonFactories、earlySingletonObjects、singletonObjects 的职责重新合起来
 ```
 
+## 先补一层：BeanPostProcessor、早期代理和重复包装
+
+这一节解决的是看完全局导图后最容易冒出来的问题：
+
+```text
+循环依赖里，A 已经在 06-09 走过早期代理判断了。
+那回到 A 自己的 initializeBean(...) 时，还会不会继续调用 BeanPostProcessor？
+AbstractAutoProxyCreator 还会不会再次 wrapIfNecessary？
+earlyProxyReferences 到底存的是什么？
+多个增强是不是就等于代理包代理？
+```
+
+### BeanPostProcessor 是什么：初始化阶段允许替换 Bean 的扩展点
+
+`BeanPostProcessor` 是 Spring Bean 创建过程里的扩展点，不是业务方法拦截器。
+
+它可以在 Bean 初始化前后处理 Bean。一般 `BeanPostProcessor` 不一定会包装 Bean，更常见的是做初始化前后的处理，比如检查标记接口、填充某些字段、处理注解元数据、注册内部状态等。
+
+但是它的能力很大：它可以返回原对象，也可以返回一个新对象。只有返回新对象时，才叫“包装”。
+
+源码里关键点是：
+
+```java
+Object result = existingBean;
+for (BeanPostProcessor processor : getBeanPostProcessors()) {
+    Object current = processor.postProcessAfterInitialization(result, beanName);
+    if (current == null) {
+        return result;
+    }
+    result = current;
+}
+return result;
+```
+
+注意这里是：
+
+```text
+result = current
+```
+
+所以前一个 `BeanPostProcessor` 如果返回了包装对象，后一个 `BeanPostProcessor` 拿到的就是这个包装后的对象。
+
+### AbstractAutoProxyCreator 和 BeanPostProcessor 是什么关系
+
+`AbstractAutoProxyCreator` 是一种特殊的 `BeanPostProcessor`。
+
+关系可以先这样看：
+
+```text
+AbstractAutoProxyCreator
+  implements SmartInstantiationAwareBeanPostProcessor
+    extends InstantiationAwareBeanPostProcessor
+      extends BeanPostProcessor
+```
+
+所以它既能参与普通初始化后代理：
+
+```java
+postProcessAfterInitialization(...)
+```
+
+也能参与循环依赖里的早期引用：
+
+```java
+getEarlyBeanReference(...)
+```
+
+也就是说，`AbstractAutoProxyCreator` 是 Spring AOP / 事务代理用 `BeanPostProcessor` 扩展点包装 Bean 的典型实现。
+
+### 早期代理之后，initializeBean 还会不会继续调用
+
+会继续调用。
+
+回到 A 之后，A 的 `initializeBean(...)` 仍然会执行，并且里面仍然会调用所有 `BeanPostProcessor#postProcessAfterInitialization(...)`。
+
+原因是这是 Bean 初始化生命周期的固定流程，不会因为前面 06-09 提前创建过代理就跳过。
+
+流程是：
+
+```text
+B 依赖 A
+  -> 提前 getEarlyBeanReference(rawA)
+  -> 如果 A 需要代理，返回 proxyA 给 B
+
+回到 A
+  -> initializeBean(rawA) 仍然执行
+  -> 所有 BeanPostProcessor 仍然执行
+  -> AbstractAutoProxyCreator.postProcessAfterInitialization(rawA)
+     发现 earlyProxyReferences 里已经记录过 rawA
+     -> 不再创建第二个 AOP 代理
+```
+
+所以结论是：
+
+```text
+initializeBean 会继续走；
+postProcessAfterInitialization 也会继续被调用；
+但 AbstractAutoProxyCreator 不会重复给 A 包一层 AOP 代理。
+```
+
+### earlyProxyReferences 存的是什么
+
+`earlyProxyReferences` 是 `AbstractAutoProxyCreator` 自己的字段，不是三级缓存。
+
+它也不是按所有 `BeanPostProcessor` 分开存的全局结构。更准确是：
+
+```text
+每个 AbstractAutoProxyCreator 实例自己维护一张 earlyProxyReferences 表。
+这张表按 bean 的 cacheKey 存。
+value 是这个 bean 的原始对象引用。
+```
+
+源码字段是：
+
+```java
+private final Map<Object, Object> earlyProxyReferences = new ConcurrentHashMap<>(16);
+```
+
+早期代理时：
+
+```java
+public Object getEarlyBeanReference(Object bean, String beanName) {
+    Object cacheKey = getCacheKey(bean.getClass(), beanName);
+    this.earlyProxyReferences.put(cacheKey, bean);
+    return wrapIfNecessary(bean, beanName, cacheKey);
+}
+```
+
+假设是 A：
+
+```text
+key   = "a"
+value = rawA
+```
+
+注意 value 是 `rawA`，不是 `proxyA`。
+
+它表达的是：
+
+```text
+A 这个原始对象 rawA 已经走过 early proxy 判断了。
+后面 initializeBean 结束后，不要再让 AbstractAutoProxyCreator 对 rawA 重复 wrapIfNecessary。
+```
+
+所以 `earlyProxyReferences` 可以先记成一句话：
+
+```text
+earlyProxyReferences 是 AbstractAutoProxyCreator 用来防止“同一个 rawA 在早期代理和初始化后代理阶段被重复 AOP 包装”的标记表。
+它不是三级缓存，也不存 proxyA。
+```
+
+### 为什么 AbstractAutoProxyCreator 不会重复 wrapIfNecessary
+
+后面 `postProcessAfterInitialization(...)` 里会这样判断：
+
+```java
+public Object postProcessAfterInitialization(@Nullable Object bean, String beanName) {
+    if (bean != null) {
+        Object cacheKey = getCacheKey(bean.getClass(), beanName);
+        if (this.earlyProxyReferences.remove(cacheKey) != bean) {
+            return wrapIfNecessary(bean, beanName, cacheKey);
+        }
+    }
+    return bean;
+}
+```
+
+意思是：
+
+```text
+如果 earlyProxyReferences 里拿出来的对象就是当前 rawA，
+说明前面 getEarlyBeanReference(rawA) 已经处理过它了，
+这里就不再 wrapIfNecessary。
+```
+
+注意，这里说的是 `AbstractAutoProxyCreator` 自己不再重复创建 AOP 代理，不是跳过 `initializeBean()`，也不是跳过所有 `BeanPostProcessor`。
+
+`doCreateBean(...)` 后面还有一步：
+
+```java
+Object earlySingletonReference = getSingleton(beanName, false);
+if (earlySingletonReference != null) {
+    if (exposedObject == bean) {
+        exposedObject = earlySingletonReference;
+    }
+}
+```
+
+这一步会把最终暴露对象从 `rawA` 替换成之前给 B 注入过的 `earlyA`。
+
+如果 A 需要代理，这个 `earlyA` 就是 `proxyA`。
+
+### 多个增强不等于多层代理
+
+这里最容易混的是：
+
+```text
+多个增强
+≠
+多层代理
+```
+
+日常最常见的场景是：
+
+```text
+一个 Bean 同时有 @Transactional
+又命中了日志 @Aspect
+又命中了权限 @Aspect
+```
+
+这通常不是：
+
+```text
+日志代理(事务代理(rawA))
+```
+
+而是：
+
+```text
+proxyA
+  advisors:
+    - TransactionInterceptor
+    - LogAspect interceptor
+    - AuthAspect interceptor
+  target:
+    rawA
+```
+
+也就是一个代理对象里有多个 `Advisor` / `Interceptor`。
+
+源码也能对应上。`AbstractAdvisorAutoProxyCreator` 会找出当前 Bean 命中的所有 `Advisor`：
+
+```java
+List<Advisor> advisors = findEligibleAdvisors(beanClass, beanName);
+return advisors.toArray();
+```
+
+然后 `AbstractAutoProxyCreator#createProxy(...)` 里一次性加入：
+
+```java
+Advisor[] advisors = buildAdvisors(beanName, specificInterceptors);
+proxyFactory.addAdvisors(advisors);
+proxyFactory.setTargetSource(targetSource);
+```
+
+所以正常 Spring AOP 主线里：
+
+```text
+@Transactional + 日志切面
+通常是一个代理 + 多个 Advisor，
+不是事务代理外面再包日志代理。
+```
+
+### 什么情况下才会真的代理包代理
+
+“代理包代理”是更特殊的情况，不是最常见主线。
+
+比如另一个 `BeanPostProcessor` 没有接入 Spring Advisor 体系，而是在 `postProcessAfterInitialization(...)` 里自己直接返回一个新代理对象：
+
+```java
+public Object postProcessAfterInitialization(Object bean, String beanName) {
+    if ("a".equals(beanName)) {
+        ProxyFactory factory = new ProxyFactory(bean);
+        factory.addAdvice((MethodInterceptor) invocation -> invocation.proceed());
+        return factory.getProxy();
+    }
+    return bean;
+}
+```
+
+这不是三级缓存。
+
+`ProxyFactory` 是一个底层代理创建工具：
+
+```text
+ProxyFactory
+  -> DefaultAopProxyFactory
+  -> JDK / CGLIB
+  -> 生成代理对象
+```
+
+三级缓存是 BeanFactory 创建单例 Bean 时处理循环依赖的机制：
+
+```text
+singletonFactories
+earlySingletonObjects
+singletonObjects
+```
+
+所以：
+
+```text
+ProxyFactory 本身不走三级缓存。
+```
+
+只有这种情况才和三级缓存连上：
+
+```text
+B 创建时需要 A
+  -> getSingleton("a")
+  -> 从 singletonFactories 拿 ObjectFactory
+  -> 执行 getEarlyBeanReference(rawA)
+  -> 某个 SmartInstantiationAwareBeanPostProcessor 在这里用 ProxyFactory 创建 proxyA
+```
+
+也就是说：
+
+```text
+三级缓存触发 getEarlyBeanReference；
+getEarlyBeanReference 里面可能用 ProxyFactory 创建代理。
+```
+
+如果没有循环依赖，另一个 `BeanPostProcessor` 又包一层，可能是：
+
+```text
+rawA
+  -> AbstractAutoProxyCreator 包成 proxyA
+  -> 自定义 BeanPostProcessor 再包成 myProxyA
+  -> singletonObjects 里最终存 myProxyA
+```
+
+业务调用链就可能变成：
+
+```text
+myProxyA.method()
+  -> 自定义包装逻辑
+  -> proxyA.method()
+    -> Spring AOP / 事务逻辑
+    -> rawA.method()
+```
+
+但在循环依赖时会麻烦：
+
+```text
+B.a 已经提前注入 proxyA
+A 后面 initializeBean 又被另一个 BeanPostProcessor 包成 myProxyA
+```
+
+这时容器最终想暴露 `myProxyA`，但 B 里面已经拿到了 `proxyA`。Spring 会检查这个不一致：
+
+```java
+Object earlySingletonReference = getSingleton(beanName, false);
+if (earlySingletonReference != null) {
+    if (exposedObject == bean) {
+        exposedObject = earlySingletonReference;
+    }
+    else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+        throw new BeanCurrentlyInCreationException(...);
+    }
+}
+```
+
+所以标准主线里，`AbstractAutoProxyCreator` 用 `earlyProxyReferences` 是为了避免自己重复包；但如果另一个 `BeanPostProcessor` 后面又包一层，就可能造成“早期注入给 B 的对象”和“容器最终暴露的对象”不一致，循环依赖场景下默认可能直接报错。
+
+最后压缩成一句话：
+
+```text
+多个增强 ≠ 多层代理。
+
+@Transactional + 日志切面：
+  通常是一个代理里多个 Advisor。
+
+多层代理：
+  通常是多个代理体系叠加，或者自定义 BeanPostProcessor 直接返回新代理对象。
+```
+
 ## 先把核心问题说透：为什么不一开始就创建代理
 
 这一节先回答一个最容易卡住的问题：
