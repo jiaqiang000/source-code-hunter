@@ -1315,6 +1315,17 @@ MethodInterceptor
 
 ### 09 ProxyFactory 和 DefaultAopProxyFactory：选择 JDK 还是 CGLIB
 
+先把边界放清楚：JDK 代理还是 CGLIB 代理，是 `DefaultAopProxyFactory` 根据当前 `ProxyFactory` 里的 `AdvisedSupport config` 决定的，不是整个项目只能选一种。
+
+这份 `config` 里包含 `targetClass`、`interfaces`、`proxyTargetClass`、`optimize` 等信息。一个应用里可以同时出现 JDK 代理和 CGLIB 代理，因为选择是按每个被代理 Bean 分别判断的；但对同一个 Bean 的这一层 AOP 代理来说，最终通常只会选一种，不会同一个 `proxyA` 既是 `$Proxy...` 又是 `$$EnhancerBySpringCGLIB$$...`。
+
+可以先这样记：
+
+```text
+有接口 + 没强制 proxyTargetClass：通常 JDK 动态代理
+没有接口 / 强制 proxyTargetClass=true：通常 CGLIB 代理
+```
+
 `ProxyFactory` 最后会走：
 
 ```java
