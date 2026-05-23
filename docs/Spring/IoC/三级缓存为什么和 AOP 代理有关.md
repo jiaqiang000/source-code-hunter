@@ -256,13 +256,16 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
 这段发生在 `doCreateBean()`。
 
 ```java
+// doCreateBean() 中，先准备 BeanWrapper，用来包住刚创建出来的原始 Java 对象。
 BeanWrapper instanceWrapper = null;
 if (mbd.isSingleton()) {
     instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
 }
 if (instanceWrapper == null) {
+    // 这里完成实例化，只是把 raw bean 创建出来，还没有开始属性填充和初始化。
     instanceWrapper = createBeanInstance(beanName, mbd, args);
 }
+// bean 就是后面要提前暴露的原始对象 rawA。
 Object bean = instanceWrapper.getWrappedInstance();
 ```
 
@@ -282,9 +285,17 @@ Object bean = instanceWrapper.getWrappedInstance();
 ### 01 AbstractAutowireCapableBeanFactory：addSingletonFactory 只是登记早期引用工厂
 
 ```java
+// 只有单例、允许循环依赖、并且当前 Bean 正在创建中，才需要提前暴露。
 boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
         isSingletonCurrentlyInCreation(beanName));
 if (earlySingletonExposure) {
+    /**
+     * ！！！！！！！！！！！！！
+     * addSingletonFactory 后面 02 具体展开：它只把 ObjectFactory 放入三级缓存。
+     * singletonFactory.getObject 后面 03 具体展开：别人回头找 A 时才会执行 lambda。
+     * getEarlyBeanReference 后面 04 具体展开：lambda 执行后才决定返回 rawA 还是 proxyA。
+     * ！！！！！！！！！！！！！
+     */
     addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
 }
 ```
@@ -303,6 +314,12 @@ if (earlySingletonExposure) {
 new ObjectFactory<Object>() {
     @Override
     public Object getObject() throws BeansException {
+        /**
+         * ！！！！！！！！！！！！！
+         * getEarlyBeanReference 后面 04 具体展开。
+         * 这里不是 ObjectFactory 创建时执行，而是 singletonFactory.getObject() 被调用时执行。
+         * ！！！！！！！！！！！！！
+         */
         return getEarlyBeanReference(beanName, mbd, bean);
     }
 }
@@ -327,8 +344,11 @@ protected void addSingletonFactory(String beanName, ObjectFactory<?> singletonFa
     Assert.notNull(singletonFactory, "Singleton factory must not be null");
     synchronized (this.singletonObjects) {
         if (!this.singletonObjects.containsKey(beanName)) {
+            // 三级缓存：这里存的是 ObjectFactory，不是 raw bean，也不是 proxy bean。
             this.singletonFactories.put(beanName, singletonFactory);
+            // 防止同一个 bean 同时在二级缓存里留下旧的早期引用。
             this.earlySingletonObjects.remove(beanName);
+            // 这里只记录 singleton beanName，不属于三级缓存本身。
             this.registeredSingletons.add(beanName);
         }
     }
@@ -368,8 +388,10 @@ getBean("a")
 ```java
 @Nullable
 protected Object getSingleton(String beanName, boolean allowEarlyReference) {
+    // 一级缓存：完整创建好的单例 Bean。
     Object singletonObject = this.singletonObjects.get(beanName);
     if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
+        // 二级缓存：已经被提前取出来用过的早期引用。
         singletonObject = this.earlySingletonObjects.get(beanName);
         if (singletonObject == null && allowEarlyReference) {
             synchronized (this.singletonObjects) {
@@ -377,10 +399,20 @@ protected Object getSingleton(String beanName, boolean allowEarlyReference) {
                 if (singletonObject == null) {
                     singletonObject = this.earlySingletonObjects.get(beanName);
                     if (singletonObject == null) {
+                        // 三级缓存：保存 ObjectFactory，真正需要早期引用时才取出来执行。
                         ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
                         if (singletonFactory != null) {
+                            /**
+                             * ！！！！！！！！！！！！！
+                             * singletonFactory.getObject 会执行 01 中保存的 lambda。
+                             * lambda 内部的 getEarlyBeanReference 后面 04 具体展开。
+                             * 如果 AOP 介入，会继续走 06、07、08、09。
+                             * ！！！！！！！！！！！！！
+                             */
                             singletonObject = singletonFactory.getObject();
+                            // ObjectFactory 执行后，早期引用进入二级缓存。
                             this.earlySingletonObjects.put(beanName, singletonObject);
+                            // 同一个 ObjectFactory 通常只执行一次，执行后从三级缓存移除。
                             this.singletonFactories.remove(beanName);
                         }
                     }
@@ -431,9 +463,17 @@ this.singletonFactories.remove(beanName);
 
 ```java
 protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
+    // 默认准备提前暴露原始对象 rawA。
     Object exposedObject = bean;
     if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+        // 遍历支持“早期引用处理”的 BeanPostProcessor。
         for (SmartInstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().smartInstantiationAware) {
+            /**
+             * ！！！！！！！！！！！！！
+             * SmartInstantiationAwareBeanPostProcessor 默认实现后面 05 具体展开。
+             * AbstractAutoProxyCreator 的 AOP 实现后面 06 具体展开。
+             * ！！！！！！！！！！！！！
+             */
             exposedObject = bp.getEarlyBeanReference(exposedObject, beanName);
         }
     }
@@ -487,6 +527,8 @@ exposedObject = bp.getEarlyBeanReference(exposedObject, beanName);
 
 ```java
 default Object getEarlyBeanReference(Object bean, String beanName) throws BeansException {
+    // 默认实现不做包装，直接返回原始对象。
+    // AOP 的关键是 AbstractAutoProxyCreator 会重写这个方法。
     return bean;
 }
 ```
@@ -517,7 +559,14 @@ AnnotationAwareAspectJAutoProxyCreator
 @Override
 public Object getEarlyBeanReference(Object bean, String beanName) {
     Object cacheKey = getCacheKey(bean.getClass(), beanName);
+    // 标记这个 bean 已经走过早期代理路径，避免初始化后重复包装代理。
     this.earlyProxyReferences.put(cacheKey, bean);
+    /**
+     * ！！！！！！！！！！！！！
+     * wrapIfNecessary 后面 07 具体展开。
+     * 这里会判断当前 Bean 是否命中 AOP 增强，命中才会创建代理。
+     * ！！！！！！！！！！！！！
+     */
     return wrapIfNecessary(bean, beanName, cacheKey);
 }
 ```
@@ -549,20 +598,31 @@ wrapIfNecessary(bean, beanName, cacheKey)
 
 ```java
 protected Object wrapIfNecessary(Object bean, String beanName, Object cacheKey) {
+    // 已经通过自定义 TargetSource 处理过的 Bean，不再重复包装。
     if (StringUtils.hasLength(beanName) && this.targetSourcedBeans.contains(beanName)) {
         return bean;
     }
+    // 已经判断过不需要代理的 Bean，直接返回原始对象。
     if (Boolean.FALSE.equals(this.advisedBeans.get(cacheKey))) {
         return bean;
     }
+    // Spring AOP 基础设施类本身不应该再被 AOP 代理。
     if (isInfrastructureClass(bean.getClass()) || shouldSkip(bean.getClass(), beanName)) {
         this.advisedBeans.put(cacheKey, Boolean.FALSE);
         return bean;
     }
 
+    // 查找当前 Bean 是否命中 Advisor/Advice；没有命中就不需要代理。
     Object[] specificInterceptors = getAdvicesAndAdvisorsForBean(bean.getClass(), beanName, null);
     if (specificInterceptors != DO_NOT_PROXY) {
         this.advisedBeans.put(cacheKey, Boolean.TRUE);
+        /**
+         * ！！！！！！！！！！！！！
+         * createProxy 后面 08 具体展开。
+         * ProxyFactory / DefaultAopProxyFactory 后面 09 具体展开。
+         * 代理对象后续被调用时，会进入 10 或 11。
+         * ！！！！！！！！！！！！！
+         */
         Object proxy = createProxy(
                 bean.getClass(), beanName, specificInterceptors, new SingletonTargetSource(bean));
         this.proxyTypes.put(cacheKey, proxy.getClass());
@@ -608,15 +668,25 @@ TargetSource 内部持有原始 bean
 protected Object createProxy(Class<?> beanClass, @Nullable String beanName,
         @Nullable Object[] specificInterceptors, TargetSource targetSource) {
 
+    // ProxyFactory 保存代理配置：TargetSource、Advisor、proxyTargetClass 等。
     ProxyFactory proxyFactory = new ProxyFactory();
     proxyFactory.copyFrom(this);
 
+    // 把当前 Bean 命中的增强包装为 Advisor，后续方法调用时再筛选成 MethodInterceptor 链。
     Advisor[] advisors = buildAdvisors(beanName, specificInterceptors);
     proxyFactory.addAdvisors(advisors);
+    // TargetSource 决定代理对象调用时从哪里拿原始目标对象。
     proxyFactory.setTargetSource(targetSource);
     customizeProxyFactory(proxyFactory);
 
     ClassLoader classLoader = getProxyClassLoader();
+    /**
+     * ！！！！！！！！！！！！！
+     * proxyFactory.getProxy 后面 09 具体展开。
+     * JDK 代理方法调用入口后面 10 具体展开。
+     * CGLIB 代理方法调用入口后面 11 具体展开。
+     * ！！！！！！！！！！！！！
+     */
     return proxyFactory.getProxy(classLoader);
 }
 ```
@@ -649,6 +719,11 @@ MethodInterceptor
 
 ```java
 public Object getProxy(@Nullable ClassLoader classLoader) {
+    /**
+     * ！！！！！！！！！！！！！
+     * createAopProxy 在本节下面继续展开：它决定使用 JDK 代理还是 CGLIB 代理。
+     * ！！！！！！！！！！！！！
+     */
     return createAopProxy().getProxy(classLoader);
 }
 ```
@@ -657,15 +732,31 @@ public Object getProxy(@Nullable ClassLoader classLoader) {
 
 ```java
 public AopProxy createAopProxy(AdvisedSupport config) throws AopConfigException {
+    // 根据代理配置选择 JDK 动态代理或 CGLIB 代理。
     if (!NativeDetector.inNativeImage() &&
             (config.isOptimize() || config.isProxyTargetClass() || hasNoUserSuppliedProxyInterfaces(config))) {
         Class<?> targetClass = config.getTargetClass();
         if (targetClass.isInterface() || Proxy.isProxyClass(targetClass) || ClassUtils.isLambdaClass(targetClass)) {
+            /**
+             * ！！！！！！！！！！！！！
+             * JDK 动态代理的调用入口后面 10 具体展开。
+             * ！！！！！！！！！！！！！
+             */
             return new JdkDynamicAopProxy(config);
         }
+        /**
+         * ！！！！！！！！！！！！！
+         * CGLIB 代理的调用入口后面 11 具体展开。
+         * ！！！！！！！！！！！！！
+         */
         return new ObjenesisCglibAopProxy(config);
     }
     else {
+        /**
+         * ！！！！！！！！！！！！！
+         * JDK 动态代理的调用入口后面 10 具体展开。
+         * ！！！！！！！！！！！！！
+         */
         return new JdkDynamicAopProxy(config);
     }
 }
@@ -701,18 +792,32 @@ public Object invoke(Object proxy, Method method, Object[] args) throws Throwabl
     TargetSource targetSource = this.advised.targetSource;
     Object target = null;
 
+    // 从 TargetSource 拿到真正被调用的原始目标对象。
     target = targetSource.getTarget();
     Class<?> targetClass = (target != null ? target.getClass() : null);
 
+    /**
+     * ！！！！！！！！！！！！！
+     * getInterceptorsAndDynamicInterceptionAdvice 后面 12 具体展开。
+     * 这里会根据当前 method 从 Advisors 中筛出 MethodInterceptor 链。
+     * ！！！！！！！！！！！！！
+     */
     List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
 
     if (chain.isEmpty()) {
+        // 没有增强链时，直接反射调用目标方法。
         Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
         retVal = AopUtils.invokeJoinpointUsingReflection(target, method, argsToUse);
     }
     else {
         MethodInvocation invocation =
                 new ReflectiveMethodInvocation(proxy, target, method, args, targetClass, chain);
+        /**
+         * ！！！！！！！！！！！！！
+         * ReflectiveMethodInvocation.proceed 后面 13 具体展开。
+         * 这里开始按顺序执行拦截器链，最后调用目标方法。
+         * ！！！！！！！！！！！！！
+         */
         retVal = invocation.proceed();
     }
 }
@@ -742,15 +847,28 @@ CGLIB 的入口名字不同，是 `intercept(...)`：
 
 ```java
 public Object intercept(Object proxy, Method method, Object[] args, MethodProxy methodProxy) throws Throwable {
+    // CGLIB 代理被调用时，同样先拿到原始目标对象。
     Object target = targetSource.getTarget();
     Class<?> targetClass = (target != null ? target.getClass() : null);
+    /**
+     * ！！！！！！！！！！！！！
+     * getInterceptorsAndDynamicInterceptionAdvice 后面 12 具体展开。
+     * CGLIB 路线和 JDK 路线一样，也要先筛选当前方法的拦截器链。
+     * ！！！！！！！！！！！！！
+     */
     List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
 
     if (chain.isEmpty() && CglibMethodInvocation.isMethodProxyCompatible(method)) {
+        // 没有增强链时，直接调用目标方法。
         Object[] argsToUse = AopProxyUtils.adaptArgumentsIfNecessary(method, args);
         retVal = invokeMethod(target, method, argsToUse, methodProxy);
     }
     else {
+        /**
+         * ！！！！！！！！！！！！！
+         * CglibMethodInvocation 复用 ReflectiveMethodInvocation.proceed，后面 13 具体展开。
+         * ！！！！！！！！！！！！！
+         */
         retVal = new CglibMethodInvocation(proxy, target, method, args, targetClass, chain, methodProxy).proceed();
     }
 }
@@ -779,6 +897,12 @@ public List<Object> getInterceptorsAndDynamicInterceptionAdvice(Method method, @
     MethodCacheKey cacheKey = new MethodCacheKey(method);
     List<Object> cached = this.methodCache.get(cacheKey);
     if (cached == null) {
+        /**
+         * ！！！！！！！！！！！！！
+         * DefaultAdvisorChainFactory 的筛选逻辑在本节下面继续展开。
+         * 它会把 Advisors 转成当前 method 真正要执行的 MethodInterceptor 链。
+         * ！！！！！！！！！！！！！
+         */
         cached = this.advisorChainFactory.getInterceptorsAndDynamicInterceptionAdvice(
                 this, method, targetClass);
         this.methodCache.put(cacheKey, cached);
@@ -793,10 +917,13 @@ public List<Object> getInterceptorsAndDynamicInterceptionAdvice(Method method, @
 for (Advisor advisor : advisors) {
     if (advisor instanceof PointcutAdvisor) {
         PointcutAdvisor pointcutAdvisor = (PointcutAdvisor) advisor;
+        // 先判断类级别是否匹配。
         if (config.isPreFiltered() || pointcutAdvisor.getPointcut().getClassFilter().matches(actualClass)) {
             MethodMatcher mm = pointcutAdvisor.getPointcut().getMethodMatcher();
+            // 再判断当前被调用的方法是否匹配。
             boolean match = mm.matches(method, actualClass);
             if (match) {
+                // 把 Advisor 中的 Advice 适配成统一的 MethodInterceptor。
                 MethodInterceptor[] interceptors = registry.getInterceptors(advisor);
                 interceptorList.addAll(Arrays.asList(interceptors));
             }
@@ -828,12 +955,20 @@ Advisor
 ```java
 public Object proceed() throws Throwable {
     if (this.currentInterceptorIndex == this.interceptorsAndDynamicMethodMatchers.size() - 1) {
+        /**
+         * ！！！！！！！！！！！！！
+         * invokeJoinpoint 在本节下面继续展开。
+         * 所有拦截器都执行完后，才真正调用目标对象方法。
+         * ！！！！！！！！！！！！！
+         */
         return invokeJoinpoint();
     }
 
+    // 每次 proceed() 都向后推进一个拦截器。
     Object interceptorOrInterceptionAdvice =
             this.interceptorsAndDynamicMethodMatchers.get(++this.currentInterceptorIndex);
 
+    // 当前拦截器内部如果继续调用 mi.proceed()，就会回到本方法执行下一个拦截器。
     return ((MethodInterceptor) interceptorOrInterceptionAdvice).invoke(this);
 }
 ```
@@ -859,6 +994,7 @@ mi.proceed()
 
 ```java
 protected Object invokeJoinpoint() throws Throwable {
+    // 真正调用原始目标对象的方法：target.method(arguments)。
     return AopUtils.invokeJoinpointUsingReflection(this.target, this.method, this.arguments);
 }
 ```
