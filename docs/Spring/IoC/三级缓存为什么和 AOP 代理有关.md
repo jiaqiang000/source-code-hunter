@@ -309,7 +309,7 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
 
 这个问题不能只用“Spring 就是这样设计的”来回答。
 
-结合下面的全局导图，真正要分清的是：
+结合上面的全局导图，真正要分清的是：
 
 ```text
 Spring 能不能提前判断 A 可能需要代理
@@ -1138,15 +1138,48 @@ createProxy(...)
 返回代理对象
 ```
 
-这里的 `SingletonTargetSource(bean)` 很重要：
+这里第一次出现 `SingletonTargetSource(bean)`。
+
+`SingletonTargetSource` 是 `TargetSource` 的一种简单实现，它固定持有一个目标对象。
+
+在当前早期代理场景里：
 
 ```text
-代理对象对外暴露
-TargetSource 内部持有原始 bean
-后面代理方法被调用时，再通过 TargetSource 找到这个原始 bean
+new SingletonTargetSource(bean)
+  这里的 bean 就是 rawA
+```
+
+它的作用是：
+
+```text
+proxyA 对外暴露
+SingletonTargetSource 内部持有 rawA
+后面业务代码调用 proxyA.method() 时，再通过 TargetSource 找到 rawA
 ```
 
 ### 08 AbstractAutoProxyCreator：createProxy 只是创建代理，不执行方法
+
+先把 07-09 包装出来的东西画出来：
+
+```text
+proxyA
+  ├─ TargetSource = SingletonTargetSource(rawA)
+  │    作用：保存真正的原始对象 rawA
+  │
+  ├─ Advisors
+  │    作用：保存当前 Bean 命中的增强规则
+  │
+  ├─ proxyTargetClass / interfaces / exposeProxy 等代理配置
+  │    作用：决定代理行为和代理方式
+  │
+  └─ 底层代理技术
+       ├─ JDK 动态代理
+       └─ CGLIB 代理
+```
+
+所以 `createProxy(...)` 不是把 `rawA` 改没了。
+
+它创建的是一个对外暴露的代理对象 `proxyA`，而 `rawA` 会作为目标对象被 `TargetSource` 持有。
 
 ```java
 protected Object createProxy(Class<?> beanClass, @Nullable String beanName,
@@ -1196,6 +1229,18 @@ MethodInterceptor
 ```
 
 这些都发生在代理对象后续被业务代码调用时。
+
+换成后面 10-13 的运行时链路，就是：
+
+```text
+业务代码调用 proxyA.method()
+  -> 10 JDK invoke 或 11 CGLIB intercept
+    -> 从 TargetSource 拿 rawA
+    -> 从 Advisors 筛出当前 method 的 MethodInterceptor 链
+    -> 13 proceed()
+      -> 执行增强
+      -> 最后调用 rawA.method()
+```
 
 ### 09 ProxyFactory 和 DefaultAopProxyFactory：选择 JDK 还是 CGLIB
 
