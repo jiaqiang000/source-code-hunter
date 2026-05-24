@@ -1,3 +1,144 @@
+# AOP源码实现及分析
+
+## 先建立边界：这篇展开代理创建和方法调用
+
+> [!note]
+> [[0、Spring AOP 全局地图]] 负责说明这篇在整个 AOP 生命周期里的位置。
+> 
+> 本文内部导图只展开两件事：代理对象怎么创建出来，以及代理方法被调用后怎么进入拦截器链。
+
+这篇文章很多源码是从 `ProxyFactoryBean` 这个老式入口讲起的。它和项目里常见的 `@Aspect`、`@Transactional` 自动代理入口不完全一样，但后面的核心主线可以合并看：命中 Advisor 后创建代理对象，调用代理对象方法时进入拦截器链。
+
+## 全局导图：从代理创建到拦截器链调用
+
+- [00] AOP 基本概念先放清楚
+  - 对应正文：[[#1 主要的接口]]
+  - `Advice`
+    - 作用：增强逻辑本身
+    - 例子：前置增强、后置增强、异常增强
+    - 对应正文：[[#1.1 Advice 通知]]
+  - `Pointcut`
+    - 作用：定义哪些方法需要被增强
+    - 对应正文：[[#1.2 Pointcut 方法的横切面]]
+  - `Advisor`
+    - 关系：把 `Advice` 和 `Pointcut` 合在一起
+    - 作用：表达“哪些方法上执行哪些增强”
+    - 对应正文：[[#1.3 Advisor 通知器]]
+
+- [01] 代理创建入口：ProxyFactoryBean 准备 target 和 Advisor
+  - 对应正文：[[#2.1 ProxyFactoryBean]]
+  - `ProxyFactoryBean`
+    - 关系：本文用它作为代理创建入口
+    - 持有：
+      - `target`
+        - 被代理的原始对象
+      - `interceptorNames`
+        - 配置的 Advisor / Advice 名称
+      - `advisors`
+        - 解析后真正放入代理配置里的 Advisor 链
+  - 关键点：
+    - 这一段解决“代理要包谁”和“代理要带哪些增强”。
+
+- [02] `getObject()` 触发代理创建流程
+  - 对应正文：[[#2.2 为配置的 target 生成 AopProxy 代理对象]]
+  - `ProxyFactoryBean.getObject()`
+    - 先调用：
+      - `initializeAdvisorChain()`
+        - 对应正文：[[#2.3 初始化 Advisor 链]]
+        - 作用：根据 `interceptorNames` 从 IoC 容器里拿到 Advisor / Advice
+    - 再判断：
+      - `isSingleton()`
+        - 单例：`getSingletonInstance()`
+          - 对应正文：[[#2.4 生成单例代理对象]]
+        - 原型：`newPrototypeInstance()`
+    - 核心结果：
+      - 最终进入 `createAopProxy().getProxy(...)`
+
+- [03] 选择 JDK 代理还是 CGLIB 代理
+  - 对应正文：
+    - [[#2.5 JDK 动态代理 生成 AopProxy 代理对象]]
+    - [[#2.6 CGLIB 生成 AopProxy 代理对象]]
+  - `ProxyCreatorSupport.createAopProxy()`
+    - 委托给：
+      - `DefaultAopProxyFactory.createAopProxy(config)`
+        - 判断条件：接口、`proxyTargetClass`、`optimize` 等配置
+        - 分支一：`new JdkDynamicAopProxy(config)`
+          - 使用 JDK 动态代理
+          - 要理解这条线，可以先看 [[JDK动态代理的实现原理解析]]
+        - 分支二：`CglibProxyFactory.createCglibProxy(config)`
+          - 使用 CGLIB 创建子类代理
+  - 核心结果：
+    - raw target 被包装成 proxy object。
+    - 但增强逻辑还没有执行，真正执行要等后面调用 `proxy.method()`。
+
+- [04] 代理方法被调用：进入 JDK / CGLIB 回调
+  - 对应正文：[[#3 Spring AOP 拦截器调用的实现]]
+  - JDK 代理路径：
+    - `proxy.method()`
+      - `$Proxy0.method()`
+        - `InvocationHandler.invoke(...)`
+          - `JdkDynamicAopProxy.invoke(...)`
+            - 对应正文：[[#3.1 JdkDynamicAopProxy 的 invoke() 拦截]]
+  - CGLIB 代理路径：
+    - `proxy.method()`
+      - CGLIB 生成的子类方法
+        - `MethodInterceptor.intercept(...)`
+          - `CglibAopProxy.intercept(...)`
+            - 对应正文：[[#3.2 CglibAopProxy 的 intercept() 拦截]]
+  - 两条路径的共同目标：
+    - 准备目标对象、目标方法、方法参数
+    - 获取当前方法对应的拦截器链
+
+- [05] 获取当前方法的拦截器链
+  - 对应正文：
+    - [[#3.4 AOP 拦截器链的调用]]
+    - [[#3.5 配置通知器]]
+  - `advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass)`
+    - 委托给：
+      - `DefaultAdvisorChainFactory.getInterceptorsAndDynamicInterceptionAdvice(...)`
+        - 遍历 `Advisor`
+        - 判断 `Pointcut` 是否匹配当前 `method`
+        - 匹配后调用：
+          - `AdvisorAdapterRegistry.getInterceptors(advisor)`
+            - 作用：把不同类型的 `Advice` 适配成统一的 `MethodInterceptor`
+  - 核心结果：
+    - 得到 `List<Object> chain`
+    - 这个 `chain` 就是后面 `proceed()` 要执行的拦截器链
+
+- [06] 执行拦截器链
+  - 对应正文：
+    - [[#3.3 目标对象中目标方法的调用]]
+    - [[#3.4 AOP 拦截器链的调用]]
+    - [[#3.6 Advice 通知的实现]]
+  - `ReflectiveMethodInvocation`
+    - 持有：
+      - `proxy`
+      - `target`
+      - `method`
+      - `args`
+      - `chain`
+    - 核心方法：
+      - `proceed()`
+        - 取下一个 `MethodInterceptor`
+        - 调用 `interceptor.invoke(this)`
+        - 拦截器内部再决定什么时候继续 `mi.proceed()`
+        - 最终调用目标方法
+  - 执行效果：
+    - 前置增强可以在目标方法前执行
+    - 后置增强可以在目标方法后执行
+    - 异常增强可以在目标方法抛异常时执行
+
+## 这一篇先抓住什么
+
+- `Advice` 是增强动作。
+- `Pointcut` 是方法匹配规则。
+- `Advisor` 是 `Advice + Pointcut`。
+- `ProxyFactoryBean.getObject()` 这条线负责创建代理对象。
+- `DefaultAopProxyFactory` 决定使用 JDK 代理还是 CGLIB 代理。
+- `JdkDynamicAopProxy.invoke(...)` 和 `CglibAopProxy.intercept(...)` 是代理方法调用后的入口。
+- `AdvisorAdapterRegistry` 会把不同类型的 Advice 适配成 `MethodInterceptor`。
+- `ReflectiveMethodInvocation.proceed()` 负责把拦截器链一层层推进到目标方法。
+
 理论性的文字，我觉得就没必要再扯一遍咯，大道理讲这么多，越听越迷糊。不如直接看源码加注释来的明白痛快。所以话不多说，直接上源码。
 
 ## 1 主要的接口
