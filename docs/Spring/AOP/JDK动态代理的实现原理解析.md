@@ -9,61 +9,76 @@
 
 ## 全局导图：从 target 到 $Proxy0.invoke
 
-- [00] 先有一个目标对象 `target`
-  - 例子：`TargetObject`
-  - 关系：它实现了 `MyInterface`
-  - 作用：真正要被调用的业务对象
-  - 方法：`play()`
+- [00] 准备真实业务对象
+  - `TargetObject target = new TargetObject()`
+    - 关系：`TargetObject implements MyInterface`
+    - 作用：它是真正干活的原始对象
+    - 方法：`play()`
 
-- [01] 再有一个代理工厂 `ProxyFactory`
-  - 关系：实现 `InvocationHandler`
-  - 作用：持有 `target`，并在 `invoke(...)` 里决定增强逻辑
-  - 关键字段：`private Object target`
-  - 关键方法：
-    - `getInstanse(target)`
-      - 保存目标对象
-      - 调用 `Proxy.newProxyInstance(...)` 生成代理对象
-    - `invoke(proxy, method, args)`
+- [01] 准备回调处理器
+  - `ProxyFactory proxyFactory = new ProxyFactory()`
+    - 关系：`ProxyFactory implements InvocationHandler`
+    - 作用：它不是业务对象，而是代理对象的方法回调处理器
+    - 内部持有：
+      - `private Object target`
+        - 指向 [00] 里的原始对象
+    - 关键方法：
+      - `getInstanse(target)`
+        - 保存 `this.target = target`
+        - 调用 [02] 生成代理对象
+      - `invoke(proxy, method, args)`
+        - 后面 [05] 代理对象被调用时会回到这里
+
+- [02] 生成代理对象
+  - `proxyFactory.getInstanse(target)`
+    - 内部调用：
+      - `Proxy.newProxyInstance(...)`
+        - 输入：
+          - `target.getClass().getClassLoader()`
+            - 类加载器：用来在运行时生成代理类
+          - `target.getClass().getInterfaces()`
+            - 接口列表：决定代理对象能被强转成哪些接口
+          - `this`
+            - 回调处理器：这里就是 [01] 的 `proxyFactory`
+        - 输出：
+          - `Object proxy`
+            - 真实类型：运行时生成的 `$Proxy0`
+            - 实现接口：`MyInterface`
+            - 内部持有：`InvocationHandler h = proxyFactory`
+
+- [03] 业务代码拿到代理对象
+  - `MyInterface mi = (MyInterface) proxyFactory.getInstanse(target)`
+    - 表面类型：`MyInterface`
+    - 真实对象：`$Proxy0`
+    - 关键点：
+      - 外部代码以为自己拿到的是一个 `MyInterface`
+      - 实际拿到的是一个实现了 `MyInterface` 的代理对象
+
+- [04] 调用代理对象的方法
+  - `mi.play()`
+    - 实际进入：
+      - `$Proxy0.play()`
+        - `$Proxy0 extends Proxy implements MyInterface`
+        - `Proxy` 父类中有字段：`InvocationHandler h`
+        - `h` 指向 [01] 的 `proxyFactory`
+        - 所以 `$Proxy0.play()` 内部不是直接调用 `target.play()`
+        - 而是调用：
+          - `super.h.invoke(this, $Proxy0.m3, null)`
+            - `this`：当前代理对象 `$Proxy0`
+            - `$Proxy0.m3`：`MyInterface.play()` 对应的 `Method`
+            - `null`：`play()` 没有参数
+
+- [05] 回到 `InvocationHandler.invoke(...)`
+  - `ProxyFactory.invoke(proxy, method, args)`
+    - `proxy`：当前代理对象 `$Proxy0`
+    - `method`：`MyInterface.play()` 对应的 `Method`
+    - `args`：方法参数，这里是 `null`
+    - 执行顺序：
       - 打印前置增强
-      - 通过 `method.invoke(target, args)` 调用真实目标对象
+      - `method.invoke(target, args)`
+        - 这里的 `target` 指向 [00] 的 `TargetObject`
+        - 真正执行：`TargetObject.play()`
       - 打印后置增强
-
-- [02] `Proxy.newProxyInstance(...)` 生成代理对象
-  - 输入：
-    - 类加载器：`target.getClass().getClassLoader()`
-    - 接口列表：`target.getClass().getInterfaces()`
-    - 回调处理器：`this`，也就是 `ProxyFactory`
-  - 输出：
-    - 一个运行时生成的代理对象
-    - 反编译后类似 `$Proxy0`
-  - 关键点：
-    - 代理对象实现了目标对象的接口 `MyInterface`
-    - 代理对象内部持有 `InvocationHandler`
-
-- [03] 业务代码拿到的是代理对象 `mi`
-  - 代码：`MyInterface mi = (MyInterface) proxyFactory.getInstanse(target)`
-  - 表面类型：`MyInterface`
-  - 真实对象：JDK 运行时生成的 `$Proxy0`
-  - 关键点：
-    - 你调用的是 `mi.play()`
-    - 实际执行的是 `$Proxy0.play()`
-
-- [04] `$Proxy0.play()` 不直接调用 `target.play()`
-  - `$Proxy0` 继承 `Proxy`
-  - `Proxy` 里有字段 `h`
-  - `h` 就是创建代理时传进去的 `InvocationHandler`
-  - 在本文例子中，`h` 就是 `proxyFactory`
-  - 所以 `$Proxy0.play()` 会调用：
-    - `super.h.invoke(this, $Proxy0.m3, null)`
-
-- [05] 最终回到 `ProxyFactory.invoke(...)`
-  - `method`：这里是 `MyInterface.play()` 对应的 `Method`
-  - `target`：这里是原始对象 `TargetObject`
-  - 执行顺序：
-    - 前置增强
-    - `method.invoke(target, args)`
-    - 真实执行 `TargetObject.play()`
-    - 后置增强
 
 ## 这段代码具体在干嘛
 
