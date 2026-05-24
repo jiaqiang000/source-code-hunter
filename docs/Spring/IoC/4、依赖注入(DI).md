@@ -1054,6 +1054,11 @@ prototype -> createBean(...)
 > `createBean()` 是进入创建的门面方法，`doCreateBean()` 才是单个 Bean 创建主流程。
 > 这里会串起实例化、循环依赖提前暴露、属性填充、初始化、销毁注册。
 
+> [!warning] 这里有三个容易混淆的位置
+> `createBeanInstance()` 创建的是原始 Bean，不是事务 / AOP 代理。
+> `populateBean()` 本身负责属性填充；循环依赖时，代理可能在它触发的递归 `getBean(...)` 链路中提前创建。
+> `initializeBean()` 是普通 AOP / 事务代理最常见的创建位置；循环依赖早期代理已经创建过时，这里不会重复创建同一个 AOP 代理。
+
 总的来说，getBean() 方法是依赖注入的起点，之后会调用 createBean()，根据之前解析生成的 BeanDefinition 对象 生成 bean 对象，下面我们看看 AbstractBeanFactory 的子类 AbstractAutowireCapableBeanFactory 中对 createBean() 的具体实现。
 
 ```java
@@ -1129,6 +1134,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
              * ！！！！！！！！！！！！！
              * 阅读标注：这里对应后面 04.1，createBeanInstance 具体展开
              * 04.1.1 InstantiationStrategy 继续展开真正的反射 / CGLIB 实例化
+             * 边界：这里创建的是原始 Bean 对象 raw bean，不是事务 / AOP 代理对象。
              * ！！！！！！！！！！！！！
              */
             instanceWrapper = createBeanInstance(beanName, mbd, args);
@@ -1182,6 +1188,10 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
              * ！！！！！！！！！！！！！！！！！！！！！！！！！！！
              * 阅读标注：这里对应后面 04.4，populateBean 具体展开
              * 04.4-04.4.5 会继续展开属性填充、属性值解析和写入
+             * 边界：populateBean 本身不负责创建 AOP 代理。
+             * 但在循环依赖场景下，它解析依赖时会递归 getBean(refName)，
+             * 递归链路可能触发 getSingleton -> ObjectFactory.getObject -> getEarlyBeanReference，
+             * 从而间接提前创建 AOP 代理。
              * ！！！！！！！！！！！！！！！！！！！！！！！！！！！
              */
             populateBean(beanName, mbd, instanceWrapper);
@@ -1190,7 +1200,11 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
                 /**
                  * ！！！！！！！！！！！！！
                  * 阅读标注：这里对应导图 04.5，initializeBean 具体展开
-                 * 专题标记：BeanPostProcessor 初始化前后处理、AOP 代理常在这一带出现
+                 * 专题标记：BeanPostProcessor 初始化前后处理。
+                 * 边界：普通非循环依赖场景下，AOP / 事务代理通常在这里通过
+                 * postProcessAfterInitialization -> wrapIfNecessary -> createProxy 创建。
+                 * 如果循环依赖已经通过 getEarlyBeanReference 提前创建过代理，
+                 * 这里仍会执行 initializeBean，但 AbstractAutoProxyCreator 会避免重复创建同一个 AOP 代理。
                  * ！！！！！！！！！！！！！
                  */
                 exposedObject = initializeBean(beanName, exposedObject, mbd);
