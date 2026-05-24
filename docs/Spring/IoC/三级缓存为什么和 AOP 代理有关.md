@@ -143,8 +143,22 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      ├─ populateBean("a")
      │        方法定义在：AbstractAutowireCapableBeanFactory
      │        作用：填充 A 的属性
+     │        对应：[[4、依赖注入(DI)#04.4-04.4.5 AbstractAutowireCapableBeanFactory：populateBean 到 applyPropertyValues]]
+     │        说明：这里不是另一个 populateBean，而是《4、依赖注入(DI)》里 [04.4] populateBean(...) 的一次具体执行，当前 beanName = "a"
+     │        │
+     │        ├─ 先进入 populateBean 的通用属性填充流程
+     │        │  对应：《4、依赖注入(DI)》里 [04.4.1] 到 [04.4.5] 这一段
+     │        │  说明：这一步不是简单地“立刻发现 A 需要 B”，而是先拿属性值、执行属性填充前扩展点、处理 autowire / 注解注入入口、进入 applyPropertyValues
+     │        │  注意：如果是 XML <property ref="b"> 主线，真正触发 getBean("b") 的关键点在 BeanDefinitionValueResolver.resolveReference(...)
      │        │
      │        └─ A 需要 B
+     │           说明：这是对上面属性填充流程的场景化压缩，不是一个独立源码方法
+     │           对应：
+     │             - XML <property ref="b"> 主线：BeanDefinitionValueResolver.resolveReference("b")
+     │             - @Autowired / @Resource 主线：InstantiationAwareBeanPostProcessor 处理属性注入时解析依赖
+     │             - XML autowire byName / byType 主线：autowireByName / autowireByType 解析依赖
+     │           本文主线按 XML <property ref="b"> 理解：
+     │             resolveReference("b") -> getBean("b")
      │           │
      │           └─ getBean("b")
      │              作用：递归创建 B
@@ -160,8 +174,10 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │                 │
      │                 ├─ populateBean("b")
      │                 │  作用：填充 B 的属性
+     │                 │  说明：这也是同一个 populateBean(...) 的一次具体执行，当前 beanName = "b"；前置属性填充步骤同上面的 populateBean("a")，这里不重复展开
      │                 │  │
      │                 │  └─ B 需要 A
+     │                 │     说明：和上面 A 需要 B 同理，这是对属性填充流程的场景化压缩；本文主线按 resolveReference("a") -> getBean("a") 理解
      │                 │     │
      │                 │     └─ getBean("a")
      │                 │        │
