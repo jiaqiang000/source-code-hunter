@@ -313,31 +313,36 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │                    B 再回头找 A，就能从三级缓存触发 ObjectFactory。
                        │
                        ├─ [04.4] populateBean(...)
-                       │        作用：属性填充 / 依赖注入
+                       │        作用：围绕 PropertyValues 做属性填充
+                       │        核心变量：pvs，表示准备写入当前 bean 的属性值集合
                        │        │
                        │        ├─ [04.4.1] mbd.getPropertyValues()
-                       │        │        作用：拿到 BeanDefinition 中解析好的属性值
+                       │        │        作用：拿到 BeanDefinition 中已有的属性值
                        │        │
                        │        ├─ [04.4.2] InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
-                       │        │        作用：属性填充前的拦截点
+                       │        │        作用：实例化后、属性填充前的扩展点
+                       │        │        结果：可能允许继续填充，也可能直接停止属性填充
                        │        │        专题标记：BeanPostProcessor
                        │        │
                        │        ├─ [04.4.3] autowireByName / autowireByType
-                       │        │        作用：处理 XML autowire 模式
+                       │        │        作用：XML autowire 模式下，按名称或类型补充 pvs
+                       │        │        边界：不是所有 Bean 都走，只在 autowire mode 开启时走
                        │        │
                        │        ├─ [04.4.4] InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
-                       │        │        作用：注解注入参与点；@Autowired / @Resource 这类会在这里附近介入
+                       │        │        作用：让 InstantiationAwareBeanPostProcessor 处理 pvs
+                       │        │        说明：@Autowired / @Resource 这类注解注入会在这里附近参与
+                       │        │        边界：不是普通 BeanPostProcessor 初始化后处理
                        │        │        专题标记：BeanPostProcessor；@Autowired / @Resource 注解注入入口
                        │        │
                        │        └─ [04.4.5] applyPropertyValues(...)
-                       │                 作用：解析属性值并准备写入对象
+                       │                 作用：使用最终 pvs 解析属性值并写入对象
                        │                 │
                        │                 ├─ [04.4.5.1] BeanDefinitionValueResolver.resolveValueIfNecessary(...)
-                       │                 │        作用：把 RuntimeBeanReference、TypedStringValue、集合等配置值解析成真实对象
-                       │                 │        专题标记：循环依赖会在解析 RuntimeBeanReference 时递归 getBean(refName)
+                       │                 │        作用：解析每个 PropertyValue，比如 RuntimeBeanReference、TypedStringValue、集合等配置值
+                       │                 │        循环依赖连接点：遇到 refName 时递归 getBean(refName)
                        │                 │
                        │                 └─ [04.4.5.2] BeanWrapper.setPropertyValues(...)
-                       │                          作用：真正通过属性访问器 / setter 写入属性
+                       │                          作用：把解析后的值真正写入属性 / setter
                        │
                        ├─ [04.5] initializeBean(...)
                        │        作用：Aware、初始化方法、BeanPostProcessor 前后处理；本文只作为边界
@@ -1657,6 +1662,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
     protected void populateBean(String beanName, RootBeanDefinition mbd, BeanWrapper bw) {
         // 获取 RootBeanDefinition 中设置的 属性值PropertyValues，这些属性值来自对
         // .xml 文件中 bean元素 的解析
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 04.4.1，拿到初始 PropertyValues
+         * 作用：从 BeanDefinition 中拿到当前 Bean 已经解析好的属性值集合 pvs
+         * ！！！！！！！！！！！！！
+         */
         PropertyValues pvs = mbd.getPropertyValues();
 
         // 如果 BeanWrapper对象 为 null，而要注入的属性值不为空，则抛出下述异常
@@ -1674,6 +1685,13 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         // 在设置属性之前调用 bean 的 PostProcessor 后置处理器
         boolean continueWithPropertyPopulation = true;
 
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 04.4.2，postProcessAfterInstantiation 可选扩展点
+         * 作用：给 InstantiationAwareBeanPostProcessor 一个机会，决定是否继续属性填充
+         * 边界：这里还没有真正写入属性
+         * ！！！！！！！！！！！！！
+         */
         if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
             for (BeanPostProcessor bp : getBeanPostProcessors()) {
                 if (bp instanceof InstantiationAwareBeanPostProcessor) {
@@ -1691,6 +1709,13 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         }
 
         // 依赖注入开始，首先处理 autowire 自动装配的注入
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 04.4.3，autowireByName / autowireByType 可选分支
+         * 作用：XML autowire 模式下，按名称或类型补充 pvs
+         * 边界：不是所有 Bean 都走，只有 autowire mode 开启时才走
+         * ！！！！！！！！！！！！！
+         */
         if (mbd.getResolvedAutowireMode() == RootBeanDefinition.AUTOWIRE_BY_NAME ||
                 mbd.getResolvedAutowireMode() == RootBeanDefinition.AUTOWIRE_BY_TYPE) {
             MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
@@ -1713,6 +1738,14 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         // bean实例对象 没有依赖，即没有继承基类
         boolean needsDepCheck = (mbd.getDependencyCheck() != RootBeanDefinition.DEPENDENCY_CHECK_NONE);
 
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 04.4.4，postProcessPropertyValues 可选扩展点
+         * 作用：让 InstantiationAwareBeanPostProcessor 处理 / 修改 / 补充 pvs
+         * 说明：@Autowired / @Resource 这类注解注入会在这里附近参与
+         * 边界：这不是 initializeBean() 里的初始化后 BeanPostProcessor
+         * ！！！！！！！！！！！！！
+         */
         if (hasInstAwareBpps || needsDepCheck) {
             // 从实例对象中提取属性描述符
             PropertyDescriptor[] filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
@@ -1734,9 +1767,10 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
             }
         }
         /**
-         * ！！！！！！！！！！！
-         * 对属性进行依赖注入
-         * ！！！！！！！！！！！
+         * ！！！！！！！！！！！！！
+         * 阅读标注：这里对应导图 04.4.5，applyPropertyValues 使用最终 pvs
+         * 作用：前面已经拿到 / 补充 / 处理过 pvs，这里开始解析属性值并准备写入对象
+         * ！！！！！！！！！！！！！
          */
         applyPropertyValues(beanName, mbd, bw, pvs);
     }
@@ -1803,10 +1837,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
                 // 原始的属性值，即转换之前的属性值
                 Object originalValue = pv.getValue();
                 /**
-                 * ！！！！！！！！！！！！！！！！！！！
-                 * 阅读标注：这里对应导图 04.4.5.1，BeanDefinitionValueResolver 具体展开
-                 * 解析属性值，对注入类型进行转换
-                 * ！！！！！！！！！！！！！！！！！！！
+                 * ！！！！！！！！！！！！！
+                 * 阅读标注：这里对应导图 04.4.5.1，BeanDefinitionValueResolver 解析单个 PropertyValue
+                 * 正文标题：04.4.5.1 BeanDefinitionValueResolver：把配置值解析成真实对象
+                 * 作用：把 RuntimeBeanReference、TypedStringValue、集合等配置值解析成真实对象
+                 * 循环依赖连接点：如果这里解析的是 RuntimeBeanReference，会进入 resolveReference(...)，再递归 getBean(refName)
+                 * ！！！！！！！！！！！！！
                  */
                 Object resolvedValue = valueResolver.resolveValueIfNecessary(pv, originalValue);
                 // 转换之后的属性值
@@ -1849,11 +1885,11 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         // 进行属性依赖注入
         try {
             /**
-             * ！！！！！！！！！！！！！！！！！！！！！
-             * 阅读标注：这里对应导图 04.4.5.2，BeanWrapper.setPropertyValues 具体展开
-             * 完成 bean 的属性值注入的入口
-             * 走 AbstractPropertyAccessor 中的实现方法
-             * ！！！！！！！！！！！！！！！！！！！！！
+             * ！！！！！！！！！！！！！
+             * 阅读标注：这里对应导图 04.4.5.2，BeanWrapper 写入最终属性值
+             * 正文标题：04.4.5.2 BeanWrapper：把解析后的值真正写入对象
+             * 作用：把前面解析 / 转换后的 deepCopy 写入当前 Bean 的属性或 setter
+             * ！！！！！！！！！！！！！
              */
             bw.setPropertyValues(new MutablePropertyValues(deepCopy));
         }
