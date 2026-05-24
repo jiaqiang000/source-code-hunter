@@ -203,7 +203,7 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
            │        专题标记：dependsOn 是 BeanDefinition 元数据，和 BeanFactoryPostProcessor 间接相关
            │
            └─ [02.6] 按 scope 创建 Bean
-              详细说明：这三条就是 doGetBean() 的 scope 分支；见正文 02.6 AbstractBeanFactory：按 scope 创建 Bean
+              详细说明：这三条就是 doGetBean() 的 scope 分支；见正文 02.6 补充：scope 分支和 ObjectFactory
               │
               ├─ singleton -> getSingleton(beanName, ObjectFactory)
               │        作用：单例创建会进入 DefaultSingletonBeanRegistry 的单例缓存体系
@@ -287,6 +287,9 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │        │                                         所以三级缓存里没有 A 的 ObjectFactory，没法提前暴露 A。
                        │        │
                        │        └─ 默认无参构造器实例化
+                       │           │
+                       │           └─ [04.1.1] InstantiationStrategy.instantiate(...)
+                       │                    作用：真正用反射或 CGLIB 创建 Java 对象
                        │
                        ├─ [04.2] applyMergedBeanDefinitionPostProcessors(...)
                        │        作用：合并后 BeanDefinition 后处理
@@ -327,11 +330,11 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │        └─ [04.4.5] applyPropertyValues(...)
                        │                 作用：解析属性值并准备写入对象
                        │                 │
-                       │                 ├─ BeanDefinitionValueResolver.resolveValueIfNecessary(...)
+                       │                 ├─ [04.4.5.1] BeanDefinitionValueResolver.resolveValueIfNecessary(...)
                        │                 │        作用：把 RuntimeBeanReference、TypedStringValue、集合等配置值解析成真实对象
                        │                 │        专题标记：循环依赖会在解析 RuntimeBeanReference 时递归 getBean(refName)
                        │                 │
-                       │                 └─ BeanWrapper.setPropertyValues(...)
+                       │                 └─ [04.4.5.2] BeanWrapper.setPropertyValues(...)
                        │                          作用：真正通过属性访问器 / setter 写入属性
                        │
                        ├─ [04.5] initializeBean(...)
@@ -775,10 +778,10 @@ public abstract class AbstractApplicationContext extends DefaultResourceLoader
 }
 ```
 
-### 01-02 AbstractBeanFactory：getBean 最终进入 doGetBean
+### 01-02 AbstractBeanFactory：getBean 到 doGetBean 总流程
 
 > [!note] 阅读提示
-> 这段代码对应导图里的 [01] 和 [02]。
+> 这段代码对应导图里的 [01]、[02]，并在 `doGetBean()` 里标出 [02.1] 到 [02.6]。
 > `getBean()` 是入口，`doGetBean()` 才是总控。
 > 真正创建对象时，`doGetBean()` 会继续调用 `createBean()`，进入后面的 [03]。
 
@@ -958,7 +961,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
                                 /**
                                  * ！！！！！！！！！！！！！
                                  * 阅读标注：这里对应导图 03，createBean 具体展开
-                                 * 后面 03-04 会进入 AbstractAutowireCapableBeanFactory#createBean / doCreateBean
+                                 * 后面 03-04 总流程会进入 AbstractAutowireCapableBeanFactory#createBean / doCreateBean
                                  * ！！！！！！！！！！！！！
                                  */
                                 return createBean(beanName, mbd, args);
@@ -1063,7 +1066,7 @@ public abstract class AbstractBeanFactory extends FactoryBeanRegistrySupport imp
 }
 ```
 
-### 02.6 AbstractBeanFactory：按 scope 创建 Bean
+#### 02.6 补充：scope 分支和 ObjectFactory
 
 先把 `[02.6]` 的 scope 分支和源码对应起来。
 
@@ -1173,10 +1176,10 @@ prototype -> createBean(...)
 
 这样和源码更对应。
 
-### 03-04 AbstractAutowireCapableBeanFactory：createBean 进入 doCreateBean
+### 03-04 AbstractAutowireCapableBeanFactory：createBean 进入 doCreateBean 总流程
 
 > [!note] 阅读提示
-> 这段代码对应导图里的 [03] 和 [04]。
+> 这段代码对应导图里的 [03]、[04]，并在 `doCreateBean()` 里标出 [04.1] 到 [04.6]。
 > `createBean()` 是进入创建的门面方法，`doCreateBean()` 才是单个 Bean 创建主流程。
 > 这里会串起实例化、循环依赖提前暴露、属性填充、初始化、销毁注册。
 
@@ -1483,10 +1486,11 @@ protected BeanWrapper instantiateBean(final String beanName, final RootBeanDefin
 }
 ```
 
-### 04.1.1 InstantiationStrategy：反射或 CGLIB 实例化对象
+#### 04.1.1 InstantiationStrategy：反射或 CGLIB 实例化对象
 
 > [!note] 阅读提示
-> 这段仍然属于导图里的 [04.1]。
+> 这段对应导图里的 [04.1.1]。
+> 它仍然属于 [04.1] `createBeanInstance()` 的子流程。
 > `createBeanInstance()` 负责选择实例化路径，`InstantiationStrategy` 负责真正创建 Java 对象。
 
 从源码中我们可以看到其调用了 SimpleInstantiationStrategy 实现类来生成 bean 对象，这个类是 Spring 用来生成 bean 对象 的默认类，它提供了两种策略来实例化 bean 对象，一种是利用 Java 的反射机制，另一种是直接使用 CGLIB。
@@ -1777,6 +1781,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
                 Object originalValue = pv.getValue();
                 /**
                  * ！！！！！！！！！！！！！！！！！！！
+                 * 阅读标注：这里对应导图 04.4.5.1，BeanDefinitionValueResolver 具体展开
                  * 解析属性值，对注入类型进行转换
                  * ！！！！！！！！！！！！！！！！！！！
                  */
@@ -1822,6 +1827,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         try {
             /**
              * ！！！！！！！！！！！！！！！！！！！！！
+             * 阅读标注：这里对应导图 04.4.5.2，BeanWrapper.setPropertyValues 具体展开
              * 完成 bean 的属性值注入的入口
              * 走 AbstractPropertyAccessor 中的实现方法
              * ！！！！！！！！！！！！！！！！！！！！！
@@ -1836,10 +1842,10 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 }
 ```
 
-### 04.4.5.1 BeanDefinitionValueResolver：把配置值解析成真实对象
+#### 04.4.5.1 BeanDefinitionValueResolver：把配置值解析成真实对象
 
 > [!note] 阅读提示
-> 这段代码对应导图里 `applyPropertyValues()` 下面的 `BeanDefinitionValueResolver.resolveValueIfNecessary(...)`。
+> 这段代码对应导图里的 [04.4.5.1] `BeanDefinitionValueResolver.resolveValueIfNecessary(...)`。
 > `RuntimeBeanReference` 在这里才会变成真实依赖对象；如果依赖对象还没创建，会递归调用 `getBean(refName)`。
 
 BeanDefinitionValueResolver 中解析属性值，对注入类型进行转换的具体实现。
@@ -2062,10 +2068,10 @@ class BeanDefinitionValueResolver {
 }
 ```
 
-### 04.4.5.2 BeanWrapper：把解析后的值真正写入对象
+#### 04.4.5.2 BeanWrapper：把解析后的值真正写入对象
 
 > [!note] 阅读提示
-> 这段代码对应导图里的 `BeanWrapper.setPropertyValues(...)`。
+> 这段代码对应导图里的 [04.4.5.2] `BeanWrapper.setPropertyValues(...)`。
 > 前面已经把 `RuntimeBeanReference` 等配置值解析成真实对象；这里是 XML `<property>` 主线里真正通过属性访问器、setter 等方式写入对象的位置。
 
 至此，已经为依赖注入做好了准备，下面就该将 bean 对象 设置到它所依赖的另一个 bean 的属性中去。AbstractPropertyAccessor 和其子类 BeanWrapperImpl 完成了依赖注入的详细过程。先看一下 AbstractPropertyAccessor 中的实现。
