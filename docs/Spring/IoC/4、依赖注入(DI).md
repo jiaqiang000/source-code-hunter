@@ -245,7 +245,9 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                     │        作用：解析 Bean class
                     │
                     ├─ [03.2] resolveBeforeInstantiation(...)
-                    │        作用：给 InstantiationAwareBeanPostProcessor 一个提前返回代理对象的机会
+                    │        作用：给 InstantiationAwareBeanPostProcessor 一个实例化前直接返回对象的机会
+                    │        边界：这是 createBeanInstance() 之前的短路路径，不是循环依赖里的 getEarlyBeanReference
+                    │        详细展开：见正文 03.2 resolveBeforeInstantiation：实例化前短路，不是三级缓存早期引用
                     │        专题标记：BeanPostProcessor；AOP 代理可能在这里提前短路 Bean 创建
                     │
                     └─ [04] beanFactory::doCreateBean(...)
@@ -344,137 +346,6 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        └─ [04.6] registerDisposableBeanIfNecessary(...)
                                 作用：注册销毁逻辑
 ```
-
-## 补充边界：resolveBeforeInstantiation 和 getEarlyBeanReference 不是同一条提前代理路径
-
-问题是：
-
-`4、依赖注入(DI)` 里的 `[03.2] resolveBeforeInstantiation(...)`，为什么没有办法和 [[三级缓存为什么和 AOP 代理有关]] 里的全局导图对应起来？
-
-你这里真正卡住的是：`resolveBeforeInstantiation` 和 `getEarlyBeanReference` 都像是“提前代理”，但它们不是一条链路上的前后步骤，而是两条不同入口。
-
-先把 Bean 创建主线放清楚：
-
-```text
-getBean("a")
-  -> doGetBean("a")
-    -> createBean("a")
-      -> resolveBeforeInstantiation("a")   // 入口 1：实例化前短路
-      -> doCreateBean("a")                 // 正常创建 Bean
-        -> createBeanInstance("a")         // new 出 rawA
-        -> addSingletonFactory("a", ...)   // 放三级缓存 ObjectFactory
-        -> populateBean("a")               // 依赖注入
-        -> initializeBean("a")             // 初始化 + BeanPostProcessor
-        -> addSingleton("a")               // 放一级缓存
-```
-
-关键区别是：
-
-`resolveBeforeInstantiation` 发生在 `createBeanInstance()` 之前。
-
-也就是说，这个时候连 `rawA` 都还没有创建出来。Spring 是在问某些 `InstantiationAwareBeanPostProcessor`：
-
-```text
-这个 Bean 要不要别走正常创建流程？
-你要不要直接给我一个对象？
-```
-
-如果这里真的返回了一个对象，比如代理对象，那么 Spring 就会短路：
-
-```text
-resolveBeforeInstantiation 返回 proxyA
-  -> 不再进入 doCreateBean
-  -> 不再 createBeanInstance
-  -> 不再 addSingletonFactory
-  -> 不再 populateBean
-```
-
-所以它和三级缓存循环依赖那条线不是一回事。
-
-三级缓存那条线是：
-
-```text
-createBeanInstance("a")
-  -> 已经 new 出 rawA
-  -> addSingletonFactory("a", () -> getEarlyBeanReference(rawA))
-```
-
-这里的前提是：`rawA` 已经存在了，只是 A 还没有完成依赖注入和初始化。
-
-所以两者本质不同：
-
-```text
-resolveBeforeInstantiation：
-  rawA 还不存在
-  目标是：实例化前直接短路创建流程
-
-getEarlyBeanReference：
-  rawA 已经存在
-  目标是：循环依赖时，别人提前要 A，Spring 决定暴露 rawA 还是 proxyA
-```
-
-普通事务 Bean 更常见的是第三条路径：
-
-```text
-A 没有循环依赖
-  -> resolveBeforeInstantiation 通常返回 null
-  -> doCreateBean 创建 rawA
-  -> addSingletonFactory 可能登记 ObjectFactory，但没人提前要 A，所以不会执行
-  -> populateBean
-  -> initializeBean
-  -> postProcessAfterInitialization
-  -> AbstractAutoProxyCreator 在这里把 rawA 包成 proxyA
-```
-
-如果有循环依赖，比如：
-
-```text
-A 需要 B
-B 又需要 A
-A 还有 @Transactional
-```
-
-流程会变成：
-
-```text
-创建 A
-  -> createBeanInstance 得到 rawA
-  -> addSingletonFactory("a", () -> getEarlyBeanReference(rawA))
-
-A 注入 B
-  -> 创建 B
-    -> B 注入 A
-      -> 发现 A 正在创建中
-      -> 从三级缓存拿 ObjectFactory
-      -> 执行 getEarlyBeanReference(rawA)
-      -> 如果 A 需要事务代理，返回 proxyA
-      -> B.a = proxyA
-
-A 后面继续 initializeBean
-  -> postProcessAfterInitialization 仍然会走
-  -> 但 AbstractAutoProxyCreator 发现 A 已经走过早期代理
-  -> 不再重复给 A 包一层事务代理
-```
-
-所以你现在看到的对应关系应该是这样：
-
-```text
-4、依赖注入(DI) 里的 [03.2] resolveBeforeInstantiation
-  -> 对应“实例化前短路代理”
-  -> 不对应《三级缓存为什么和 AOP 代理有关》
-
-《三级缓存为什么和 AOP 代理有关》
-  -> 对应 doCreateBean 里面的 addSingletonFactory
-  -> 对应 ObjectFactory.getObject()
-  -> 对应 getEarlyBeanReference
-```
-
-一句话总结：
-
-`resolveBeforeInstantiation` 是“还没 new，就直接给一个对象”；
-`getEarlyBeanReference` 是“已经 new 了 rawA，但循环依赖逼着 Spring 提前暴露 A，于是决定暴露 rawA 还是 proxyA”。
-
-另外 resolveBeforeInstantiation的使用非常不常见[[BeanPostProcessor#resolveBeforeInstantiation 常见吗：业务项目一般不用自己扩展]]
 
 ## 两条路径：普通依赖和循环依赖怎么走这篇代码
 
@@ -1392,6 +1263,141 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
     }
 }
 ```
+
+#### 03.2 resolveBeforeInstantiation：实例化前短路，不是三级缓存早期引用
+
+> [!note] 这一节对应导图 [03.2]
+> `resolveBeforeInstantiation(...)` 是 `createBean()` 里面、`doCreateBean()` 之前的短路入口。
+> 它容易和 [[三级缓存为什么和 AOP 代理有关]] 里的 `getEarlyBeanReference(...)` 混起来，但这两者不是同一条提前代理路径。
+
+问题是：
+
+`4、依赖注入(DI)` 里的 `[03.2] resolveBeforeInstantiation(...)`，为什么没有办法和 [[三级缓存为什么和 AOP 代理有关]] 里的全局导图对应起来？
+
+你这里真正卡住的是：`resolveBeforeInstantiation` 和 `getEarlyBeanReference` 都像是“提前代理”，但它们不是一条链路上的前后步骤，而是两条不同入口。
+
+先把 Bean 创建主线放清楚：
+
+```text
+getBean("a")
+  -> doGetBean("a")
+    -> createBean("a")
+      -> resolveBeforeInstantiation("a")   // 入口 1：实例化前短路
+      -> doCreateBean("a")                 // 正常创建 Bean
+        -> createBeanInstance("a")         // new 出 rawA
+        -> addSingletonFactory("a", ...)   // 放三级缓存 ObjectFactory
+        -> populateBean("a")               // 依赖注入
+        -> initializeBean("a")             // 初始化 + BeanPostProcessor
+        -> addSingleton("a")               // 放一级缓存
+```
+
+关键区别是：
+
+`resolveBeforeInstantiation` 发生在 `createBeanInstance()` 之前。
+
+也就是说，这个时候连 `rawA` 都还没有创建出来。Spring 是在问某些 `InstantiationAwareBeanPostProcessor`：
+
+```text
+这个 Bean 要不要别走正常创建流程？
+你要不要直接给我一个对象？
+```
+
+如果这里真的返回了一个对象，比如代理对象，那么 Spring 就会短路：
+
+```text
+resolveBeforeInstantiation 返回 proxyA
+  -> 不再进入 doCreateBean
+  -> 不再 createBeanInstance
+  -> 不再 addSingletonFactory
+  -> 不再 populateBean
+```
+
+所以它和三级缓存循环依赖那条线不是一回事。
+
+三级缓存那条线是：
+
+```text
+createBeanInstance("a")
+  -> 已经 new 出 rawA
+  -> addSingletonFactory("a", () -> getEarlyBeanReference(rawA))
+```
+
+这里的前提是：`rawA` 已经存在了，只是 A 还没有完成依赖注入和初始化。
+
+所以两者本质不同：
+
+```text
+resolveBeforeInstantiation：
+  rawA 还不存在
+  目标是：实例化前直接短路创建流程
+
+getEarlyBeanReference：
+  rawA 已经存在
+  目标是：循环依赖时，别人提前要 A，Spring 决定暴露 rawA 还是 proxyA
+```
+
+普通事务 Bean 更常见的是第三条路径：
+
+```text
+A 没有循环依赖
+  -> resolveBeforeInstantiation 通常返回 null
+  -> doCreateBean 创建 rawA
+  -> addSingletonFactory 可能登记 ObjectFactory，但没人提前要 A，所以不会执行
+  -> populateBean
+  -> initializeBean
+  -> postProcessAfterInitialization
+  -> AbstractAutoProxyCreator 在这里把 rawA 包成 proxyA
+```
+
+如果有循环依赖，比如：
+
+```text
+A 需要 B
+B 又需要 A
+A 还有 @Transactional
+```
+
+流程会变成：
+
+```text
+创建 A
+  -> createBeanInstance 得到 rawA
+  -> addSingletonFactory("a", () -> getEarlyBeanReference(rawA))
+
+A 注入 B
+  -> 创建 B
+    -> B 注入 A
+      -> 发现 A 正在创建中
+      -> 从三级缓存拿 ObjectFactory
+      -> 执行 getEarlyBeanReference(rawA)
+      -> 如果 A 需要事务代理，返回 proxyA
+      -> B.a = proxyA
+
+A 后面继续 initializeBean
+  -> postProcessAfterInitialization 仍然会走
+  -> 但 AbstractAutoProxyCreator 发现 A 已经走过早期代理
+  -> 不再重复给 A 包一层事务代理
+```
+
+所以你现在看到的对应关系应该是这样：
+
+```text
+4、依赖注入(DI) 里的 [03.2] resolveBeforeInstantiation
+  -> 对应“实例化前短路代理”
+  -> 不对应《三级缓存为什么和 AOP 代理有关》
+
+《三级缓存为什么和 AOP 代理有关》
+  -> 对应 doCreateBean 里面的 addSingletonFactory
+  -> 对应 ObjectFactory.getObject()
+  -> 对应 getEarlyBeanReference
+```
+
+一句话总结：
+
+`resolveBeforeInstantiation` 是“还没 new，就直接给一个对象”；
+`getEarlyBeanReference` 是“已经 new 了 rawA，但循环依赖逼着 Spring 提前暴露 A，于是决定暴露 rawA 还是 proxyA”。
+
+另外 `resolveBeforeInstantiation` 的使用非常不常见，见 [[BeanPostProcessor#resolveBeforeInstantiation 常见吗：业务项目一般不用自己扩展]]。
 
 ### 04.1 AbstractAutowireCapableBeanFactory：createBeanInstance 创建 Java 对象
 
