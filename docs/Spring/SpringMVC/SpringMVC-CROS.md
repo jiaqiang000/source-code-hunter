@@ -1,6 +1,35 @@
 # Spring-MVC 跨域
 
+这篇文章要解决的是：Spring MVC 的 CORS 配置从哪里来，保存到哪里，请求进来时又在哪里被使用。
+
+整体主线可以先这样看：
+
+- 配置来源
+  - `@CrossOrigin`
+    - 在 `RequestMappingHandlerMapping` 注册 HandlerMethod 时解析
+    - 结果写入 `corsLookup`
+  - `<mvc:cors>`
+    - 在 XML 命名空间解析阶段解析
+    - 结果注册成全局的 CORS 配置 Bean
+- 配置载体
+  - `CorsConfiguration`
+    - 保存允许的 origin、method、header、credentials、maxAge 等信息
+- 请求处理
+  - `HandlerMapping.getHandler(request)`
+    - 先找到普通请求的 `HandlerExecutionChain`
+    - 再判断是否是 CORS 请求
+    - 再合并全局配置和当前 handler 配置
+    - 最后把 `CorsInterceptor` 或 `PreFlightHandler` 接入这次请求的执行链
+- 真正处理
+  - `CorsInterceptor.preHandle(...)`
+    - 调用 `DefaultCorsProcessor`
+    - 校验请求并写入 CORS 响应头
+
+所以这篇不是单独讲一个注解或一个 XML 标签，而是在讲 CORS 如何接入 Spring MVC 的 HandlerMapping 和 HandlerExecutionChain 流程。这个位置可以和 [[SpringMVC的设计与实现#4.2 使用 HandlerMapping 完成请求的映射处理]]、[[SpringMVC的设计与实现#4.3 DispatcherServlet 对 HTTP 请求的分发处理]] 对照看。
+
 ## CrossOrigin 注解
+
+先看注解方式。`@CrossOrigin` 不是在请求进来时才临时解析，而是在 Spring MVC 启动阶段注册 Controller 方法映射时就被解析成 `CorsConfiguration`。
 
 - 通过注解设置跨域 demo 如下
 
@@ -84,6 +113,8 @@ public class JSONController {
 
 - 着重查看**`CorsConfiguration`**初始化方法
 
+前面的 `register(...)` 已经说明了：当一个 Controller 方法被注册成 HandlerMethod 时，Spring MVC 会顺手调用 `initCorsConfiguration(...)`。这一段代码就是把类上、方法上的 `@CrossOrigin` 读出来。
+
   - `org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping#initCorsConfiguration`
 
 ```java
@@ -124,6 +155,8 @@ public class JSONController {
 ![image-20200123085756168](https://fastly.jsdelivr.net/gh/doocs/source-code-hunter@main/images/springMVC/clazz/image-20200123085756168.png)
 
 ### updateCorsConfig
+
+`initCorsConfiguration(...)` 负责找到注解，`updateCorsConfig(...)` 负责把注解里的字段真正写进 `CorsConfiguration`。
 
 - 该方法对原有的配置信息做补充
 
@@ -170,6 +203,8 @@ public class JSONController {
 
 - 解析完成后放入 `corsLookup`对象中 类:**`org.springframework.web.servlet.handler.AbstractHandlerMethodMapping`**
 
+到这里，注解方式的启动期流程就闭合了：`@CrossOrigin` 被解析成 `CorsConfiguration`，再按 `HandlerMethod -> CorsConfiguration` 的关系放入 `corsLookup`。后面请求进来时，Spring MVC 才能根据当前 handler 找回这份 CORS 配置。
+
   ```java
                   if (corsConfig != null) {
                       this.corsLookup.put(handlerMethod, corsConfig);
@@ -178,6 +213,8 @@ public class JSONController {
   ```
 
 ## xml 配置方式
+
+除了注解方式，Spring MVC 还支持通过 `<mvc:cors>` 声明全局 CORS 配置。它和 `@CrossOrigin` 的入口不同：`@CrossOrigin` 绑定到具体 HandlerMethod，`<mvc:cors>` 走 XML 命名空间解析，最后成为全局配置。
 
 ```xml
     <mvc:cors>
@@ -234,6 +271,8 @@ public class JSONController {
   ```
 
 ### CorsBeanDefinitionParser
+
+`MvcNamespaceHandler` 只是把 `cors` 标签交给 `CorsBeanDefinitionParser`。真正读取 `<mvc:mapping>` 属性、创建 `CorsConfiguration`、注册全局配置的是下面这个 parser。
 
 #### 类图
 
@@ -339,6 +378,8 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 
 ## CorsConfiguration
 
+前面两种配置入口最后都会汇合到 `CorsConfiguration`：注解方式是一条 HandlerMethod 对应一份配置，XML 方式是按 path pattern 保存全局配置。请求处理阶段拿到的也是这个对象。
+
 - 跨域信息
 
 ```java
@@ -387,6 +428,10 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 
 ## 处理请求
 
+前面讲的是“配置如何产生”。从这里开始看“请求来了以后配置如何生效”。
+
+这个入口位于 `HandlerMapping.getHandler(request)`。普通 Spring MVC 请求本来就会在这里找到 handler，并组装 `HandlerExecutionChain`；CORS 的逻辑是在这个基础上额外插入的。
+
 - 请求处理的一部分，前置后置都还有其他处理，这里只对跨域请求进行说明
 
   ```java
@@ -431,6 +476,8 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 
 ### 判断是否跨域
 
+Spring MVC 首先不急着创建拦截器，而是判断这是不是一个 CORS 请求。判断依据很直接：请求头里是否带了 `Origin`。
+
 - `org.springframework.web.cors.CorsUtils#isCorsRequest`
 
 ```java
@@ -442,6 +489,8 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 ```
 
 ### 获取跨域信息
+
+确认是 CORS 请求后，Spring MVC 会同时取两类配置：全局配置和当前 handler 自己的配置。全局配置通常来自 `<mvc:cors>`，当前 handler 配置通常来自 `@CrossOrigin`。
 
 ```java
         // 判断是否为跨域请求
@@ -456,6 +505,8 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 ```
 
 ### 跨域拦截器创建
+
+拿到最终 `CorsConfiguration` 后，Spring MVC 不是立刻调用 Controller，而是先改写当前请求的 `HandlerExecutionChain`。这一步把 CORS 处理接到正常 MVC 执行链里。
 
 ```java
     protected HandlerExecutionChain getCorsHandlerExecutionChain(HttpServletRequest request,
@@ -475,6 +526,8 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 ```
 
 ### 跨域拦截器
+
+对于普通 CORS 请求，Spring MVC 会追加一个 `CorsInterceptor`。这样后续执行拦截器链时，CORS 就能在 Controller 之前处理。
 
 ```java
     /**
@@ -506,6 +559,8 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 ```
 
 ### DefaultCorsProcessor
+
+`CorsInterceptor` 本身只是接入点，真正判断是否允许、是否预检、是否需要写响应头的是 `DefaultCorsProcessor`。
 
 - 经过跨域拦截器 **`CorsInterceptor`**之后会调用
 
@@ -552,6 +607,8 @@ public class CorsBeanDefinitionParser implements BeanDefinitionParser {
 ```
 
 ### 模拟请求
+
+这个请求示例可以用来对应前面的流程：因为带了 `Origin` 请求头，所以会被 `CorsUtils.isCorsRequest(...)` 判断为 CORS 请求，然后进入配置获取、执行链改写和 `DefaultCorsProcessor` 处理。
 
 ```
 GET http://localhost:9999/json
