@@ -331,6 +331,33 @@ public static void registerBeanPostProcessors(
 
 这里先只看它和 `@Autowired` / `@Value` 字段或方法注入最相关的一条线：在 `populateBean()` 阶段，Spring 遍历 `InstantiationAwareBeanPostProcessor`，调用 `postProcessProperties(...)`，`AutowiredAnnotationBeanPostProcessor` 就是在这里解析注入点并完成注入。
 
+对应到 [[4、依赖注入(DI)]]，它就是全局导图里的 `[04.4.4] 可选：注解注入后处理器处理字段 / 方法注入`。
+
+> [!note] 为什么遍历的是 InstantiationAwareBeanPostProcessor，却会执行 AutowiredAnnotationBeanPostProcessor
+> 这是接口继承和实现类的关系：
+>
+> ```text
+> BeanPostProcessor                                      接口
+> └─ InstantiationAwareBeanPostProcessor                 extends BeanPostProcessor
+>    └─ SmartInstantiationAwareBeanPostProcessor          extends InstantiationAwareBeanPostProcessor
+>       └─ AutowiredAnnotationBeanPostProcessor           implements SmartInstantiationAwareBeanPostProcessor
+> ```
+>
+> 所以 `AutowiredAnnotationBeanPostProcessor` 同时具备上面这些接口身份，也就能被放进 `InstantiationAwareBeanPostProcessor` 这一类处理器集合里。
+>
+> 源码里用 `InstantiationAwareBeanPostProcessor` 这个接口类型遍历一组处理器：
+>
+> ```java
+> for (InstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().instantiationAware) {
+>     bp.postProcessProperties(pvs, bean, beanName);
+> }
+> ```
+>
+> 但集合里的真实对象可以是 `AutowiredAnnotationBeanPostProcessor`。
+> 调用接口方法时，会动态派发到它自己的 `postProcessProperties(...)` 实现。
+>
+> 所以不是“遍历一个东西之后突然变成另一个东西”，而是“用父接口类型遍历，实际对象是某个具体实现类”。
+
 下面这个例子是最简单的场景：用 `@Autowired` 注入一个普通字段对象。其他子类也可以按类似方式沿着生命周期阶段去看。
 
 我们看看 AutowiredAnnotationBeanPostProcessor 类，当然也是省略大部分代码：
