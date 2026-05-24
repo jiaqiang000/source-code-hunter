@@ -1506,12 +1506,15 @@ protected BeanWrapper instantiateBean(final String beanName, final RootBeanDefin
 }
 ```
 
-#### 04.1.1 InstantiationStrategy：反射或 CGLIB 实例化对象
+#### 04.1.1 InstantiationStrategy：创建原始 Bean，反射或 CGLIB 方法注入实例化
 
 > [!note] 阅读提示
 > 这段对应导图里的 [04.1.1]。
 > 它仍然属于 [04.1] `createBeanInstance()` 的子流程。
 > `createBeanInstance()` 负责选择实例化路径，`InstantiationStrategy` 负责真正创建 Java 对象。
+
+> [!warning] 这里的 CGLIB 不是 AOP 代理
+> 这里讲的是 Spring 如何创建原始 Bean 对象。CGLIB 只是在方法注入等特殊场景下用来生成 Bean 子类实例，不是事务 / AOP 代理对象。
 
 从源码中我们可以看到其调用了 SimpleInstantiationStrategy 实现类来生成 bean 对象，这个类是 Spring 用来生成 bean 对象 的默认类，它提供了两种策略来实例化 bean 对象，一种是利用 Java 的反射机制，另一种是直接使用 CGLIB。
 
