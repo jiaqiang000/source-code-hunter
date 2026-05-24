@@ -336,6 +336,7 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │        │        写入：后处理器通常自己反射写字段 / 调方法
                        │        │        边界：不一定进入后面的 applyPropertyValues 写入；也不是普通 BeanPostProcessor 初始化后处理
                        │        │        补充：同一代码块里还可能执行 dependency check
+                       │        │        典型例子：[[BeanPostProcessor#AutowiredAnnotationBeanPostProcessor：在 populateBean 阶段处理 @Autowired]]
                        │        │        专题标记：BeanPostProcessor；@Autowired / @Resource 注解注入入口
                        │        │
                        │        └─ [04.4.5] pvs 收口：applyPropertyValues(...)
@@ -1755,6 +1756,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
          * 关键：解析依赖时也会 getBean(refName)，因此可以衔接到循环依赖专题里的 getBean("b") 后续流程
          * 写入：后处理器通常自己反射写字段 / 调方法
          * 边界：不一定进入后面的 applyPropertyValues 写入；也不是 initializeBean() 里的初始化后 BeanPostProcessor
+         * 典型例子：BeanPostProcessor 文档里的 AutowiredAnnotationBeanPostProcessor 小节。
          * 补充：同一代码块里还可能执行 dependency check
          * ！！！！！！！！！！！！！
          */
