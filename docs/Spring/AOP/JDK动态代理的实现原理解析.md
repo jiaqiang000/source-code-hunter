@@ -1,3 +1,100 @@
+# JDK动态代理的实现原理解析
+
+## 先建立边界：这篇不是直接讲 Spring AOP
+
+> [!note]
+> 这篇先解决一个前置问题：JDK 动态代理生成出来的代理对象，为什么能接住方法调用。
+> 
+> 它还没有进入 Spring AOP 的 `Advisor`、`Pointcut`、`ProxyFactory`、`JdkDynamicAopProxy` 主线，但后面理解 Spring AOP 的 JDK 代理时，会用到这里的直觉。
+
+## 全局导图：从 target 到 $Proxy0.invoke
+
+- [00] 先有一个目标对象 `target`
+  - 例子：`TargetObject`
+  - 关系：它实现了 `MyInterface`
+  - 作用：真正要被调用的业务对象
+  - 方法：`play()`
+
+- [01] 再有一个代理工厂 `ProxyFactory`
+  - 关系：实现 `InvocationHandler`
+  - 作用：持有 `target`，并在 `invoke(...)` 里决定增强逻辑
+  - 关键字段：`private Object target`
+  - 关键方法：
+    - `getInstanse(target)`
+      - 保存目标对象
+      - 调用 `Proxy.newProxyInstance(...)` 生成代理对象
+    - `invoke(proxy, method, args)`
+      - 打印前置增强
+      - 通过 `method.invoke(target, args)` 调用真实目标对象
+      - 打印后置增强
+
+- [02] `Proxy.newProxyInstance(...)` 生成代理对象
+  - 输入：
+    - 类加载器：`target.getClass().getClassLoader()`
+    - 接口列表：`target.getClass().getInterfaces()`
+    - 回调处理器：`this`，也就是 `ProxyFactory`
+  - 输出：
+    - 一个运行时生成的代理对象
+    - 反编译后类似 `$Proxy0`
+  - 关键点：
+    - 代理对象实现了目标对象的接口 `MyInterface`
+    - 代理对象内部持有 `InvocationHandler`
+
+- [03] 业务代码拿到的是代理对象 `mi`
+  - 代码：`MyInterface mi = (MyInterface) proxyFactory.getInstanse(target)`
+  - 表面类型：`MyInterface`
+  - 真实对象：JDK 运行时生成的 `$Proxy0`
+  - 关键点：
+    - 你调用的是 `mi.play()`
+    - 实际执行的是 `$Proxy0.play()`
+
+- [04] `$Proxy0.play()` 不直接调用 `target.play()`
+  - `$Proxy0` 继承 `Proxy`
+  - `Proxy` 里有字段 `h`
+  - `h` 就是创建代理时传进去的 `InvocationHandler`
+  - 在本文例子中，`h` 就是 `proxyFactory`
+  - 所以 `$Proxy0.play()` 会调用：
+    - `super.h.invoke(this, $Proxy0.m3, null)`
+
+- [05] 最终回到 `ProxyFactory.invoke(...)`
+  - `method`：这里是 `MyInterface.play()` 对应的 `Method`
+  - `target`：这里是原始对象 `TargetObject`
+  - 执行顺序：
+    - 前置增强
+    - `method.invoke(target, args)`
+    - 真实执行 `TargetObject.play()`
+    - 后置增强
+
+## 这段代码具体在干嘛
+
+这篇代码其实是在演示一件事：调用代理对象的方法时，为什么能自动绕到增强逻辑里。
+
+如果没有代理，调用链很简单：
+
+- `target.play()`
+  - 直接进入 `TargetObject.play()`
+
+有了 JDK 动态代理之后，调用链变成：
+
+- `mi.play()`
+  - `mi` 的真实类型是 `$Proxy0`
+  - 进入 `$Proxy0.play()`
+    - 调用 `super.h.invoke(...)`
+      - `h` 是 `ProxyFactory`
+      - 进入 `ProxyFactory.invoke(...)`
+        - 执行前置增强
+        - 通过反射调用 `TargetObject.play()`
+        - 执行后置增强
+
+所以 JDK 动态代理的核心不是“改了目标对象”，而是“让你拿到的对象变成代理对象”。业务代码以为自己在调用 `MyInterface.play()`，实际先进入 `$Proxy0.play()`，再由 `$Proxy0` 回调 `InvocationHandler.invoke(...)`，最后才调用原始对象。
+
+> [!tip]
+> 这就是后面 Spring AOP 里 `JdkDynamicAopProxy.invoke(...)` 能生效的基础。
+> 
+> Spring AOP 不是让业务代码直接调用原始 Bean，而是尽量让外部拿到代理 Bean。调用代理 Bean 的方法时，才进入增强链。
+
+## 原文代码：从 ProxyFactory 到 $Proxy0
+
 最近在看 Spring AOP 部分的源码，所以对 JDK 动态代理具体是如何实现的这件事产生了很高的兴趣，而且能从源码上了解这个原理的话，也有助于对 spring-aop 模块的理解。话不多说，上代码。
 
 ```java
