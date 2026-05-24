@@ -136,6 +136,145 @@ public class OrderService {
 
 这些情况本质都是：代理对象没有办法拦住这次方法调用。
 
+### 先分清：失败可能发生在三个阶段
+
+先看总图：
+
+- [01] 先决定用哪种代理
+  - JDK 动态代理
+  - CGLIB 代理
+
+- [02] 代理能不能创建出来
+  - `final class` 主要卡在这里，针对 CGLIB
+
+- [03] 这个方法能不能被事务 Advisor 匹配
+  - `private` / 非 public 方法常卡在这里
+
+- [04] 调用这个方法时能不能进入代理回调
+  - JDK：`invoke(...)`
+  - CGLIB：`intercept(...)`
+
+- [05] 能不能进入 `TransactionInterceptor`
+  - 进不去就表现为 `@Transactional` 失效
+
+### JDK 代理和 CGLIB 代理不是同一种限制
+
+#### final class 发生在哪里
+
+如果走 CGLIB，Spring 要生成目标类的子类：
+
+```text
+class XxxService$$CGLIB extends XxxService
+```
+
+对应源码位置是 [[AOP源码实现及分析#2.6 CGLIB 生成 AopProxy 代理对象]] 里设置 superclass 和创建代理对象的地方。
+
+如果目标类是 `final class`，CGLIB 不能继承它，代理创建可能直接失败。这个不是“调用时失效”，而是“代理创建阶段就出问题”。
+
+但 JDK 代理不一样。JDK 代理不继承目标类，它生成的是接口代理：
+
+```text
+$Proxy0 implements XxxInterface
+```
+
+所以如果 `final class OrderService implements OrderServiceApi`，并且 Spring 走 JDK 代理，那么 `final class` 本身不是问题。
+
+#### final method 发生在哪里
+
+CGLIB 会检查 final 方法，对应 [[AOP源码实现及分析#2.6 CGLIB 生成 AopProxy 代理对象]] 中的 class 校验和代理创建过程。
+
+源码里对 final 方法会提示：
+
+```text
+Final method ... cannot get proxied via CGLIB
+```
+
+原因是 CGLIB 靠子类重写方法：
+
+```text
+proxy.b()
+  -> CGLIB 子类重写的 b()
+    -> intercept(...)
+```
+
+但 `final method` 不能被子类重写，所以这个方法不会进入 `intercept(...)`。你 md 里对应的是 [[AOP源码实现及分析#3.2 CglibAopProxy 的 intercept() 拦截]]。
+
+JDK 代理这里不一样：如果这个 final 方法是接口方法的实现，那么外部调用的是 `$Proxy0.interfaceMethod()`，仍然可以进入 JDK 的 `InvocationHandler.invoke(...)`。所以 `final method` 对 CGLIB 是硬伤，对 JDK 接口代理不一定是问题。
+
+#### private method 发生在哪里
+
+这里有两层问题。
+
+第一层：事务属性匹配阶段就可能被过滤。
+
+Spring 事务默认是 public 方法才支持事务语义。核心逻辑可以对应到 [[Spring-transaction#TransactionInterceptor]] 背后的 `TransactionAttributeSource` 读取过程：
+
+```java
+if (allowPublicMethodsOnly() && !Modifier.isPublic(method.getModifiers())) {
+    return null;
+}
+```
+
+`return null` 的意思是：这个方法没有事务属性，事务 Advisor 不匹配它。
+
+第二层：代理调用阶段也拦不住。
+
+CGLIB 子类看不到 private 方法，不能重写。JDK 代理也只能代理接口实例方法，private 方法不会在接口代理调用链里。
+
+所以 private 方法不是单点失败，而是：
+
+```text
+事务属性可能不匹配
+  + 代理也没有办法拦截 private 方法调用
+```
+
+#### static method 发生在哪里
+
+`static` 方法不是对象实例方法，不走：
+
+```text
+proxy.method()
+```
+
+这种对象虚方法调用链。
+
+CGLIB 靠子类重写实例方法，static 方法不能被重写。JDK 代理靠接口实例方法回调，static 方法也不是这种调用。所以它本质上不进入 Spring AOP 的代理方法调用链。
+
+最重要的区别：
+
+```text
+CGLIB：
+  靠继承目标类 + 重写方法
+  所以 final class / final method / private method / static method 都很敏感
+
+JDK 动态代理：
+  靠生成接口代理
+  不继承目标类
+  所以 final class 不一定有问题
+  final method 如果是接口方法实现，也不一定有问题
+  但不在接口上的方法，JDK 代理无法暴露和拦截
+```
+
+所以不是一句“这些都会导致失效”。更准确是：
+
+```text
+final class：
+  CGLIB 代理创建阶段失败
+  JDK 接口代理不一定受影响
+
+final method：
+  CGLIB 调用阶段进不了 intercept
+  JDK 接口代理不一定受影响
+
+private method：
+  事务属性匹配阶段通常就不认
+  代理调用阶段也拦不住
+
+static method：
+  不属于对象代理调用链
+  Spring AOP 代理拦不住
+```
+
 ### JDK 动态代理只代理接口方法
 
 JDK 动态代理的直觉可以看 [[JDK动态代理的实现原理解析]]。
