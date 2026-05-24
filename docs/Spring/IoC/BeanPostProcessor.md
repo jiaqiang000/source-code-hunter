@@ -23,18 +23,33 @@ public interface BeanPostProcessor {
 
 ## 先区分：狭义 BeanPostProcessor 和广义 BeanPostProcessor 体系
 
-> [!note] 先把名字拆开
-> 狭义的 `BeanPostProcessor` 就是上面这个接口，核心只有初始化前后两个方法。
-> 但是 Spring 里常说的 BeanPostProcessor，很多时候指的是一整套后处理器体系。
-> 这套体系里有很多子接口，所以它们能插入 Bean 创建的不同阶段。
+> [!note] 先抓核心
+> 不是所有 `BeanPostProcessor` 都会经历所有阶段。
+>
+> Spring 的逻辑是：
+>
+> 1. 先把所有 `BeanPostProcessor` 注册到 `BeanFactory`。
+> 2. 再按 `instanceof` 把它们分到不同缓存列表里。
+> 3. Bean 创建到不同阶段时，Spring 只遍历对应类型的处理器列表。
+> 4. 某个处理器真正做不做事，取决于它有没有实现 / 重写对应方法。
 
-狭义 `BeanPostProcessor` 只对应：
+### 1. 狭义 BeanPostProcessor：只管初始化前后
+
+狭义的 `BeanPostProcessor` 只有两个核心方法：
+
+```text
+BeanPostProcessor
+  -> postProcessBeforeInitialization(...)
+  -> postProcessAfterInitialization(...)
+```
+
+它对应的位置是：
 
 ```text
 initializeBean()
-  -> postProcessBeforeInitialization(...)
+  -> applyBeanPostProcessorsBeforeInitialization(...)
   -> invokeInitMethods(...)
-  -> postProcessAfterInitialization(...)
+  -> applyBeanPostProcessorsAfterInitialization(...)
 ```
 
 也就是说，如果一个类只是：
@@ -44,53 +59,200 @@ public class MyProcessor implements BeanPostProcessor {
 }
 ```
 
-那它稳定参与的是初始化前后：
+那它会经过的典型回调是：
 
 ```text
 postProcessBeforeInitialization(...)
 postProcessAfterInitialization(...)
 ```
 
-它不会自动进入 `populateBean()` 的 `postProcessProperties(...)`，也不会自动参与构造器选择。
+也就是说，它稳定参与的是 `initializeBean()` 初始化前后，不会自动参与 `populateBean()` 的属性注入，也不会自动参与构造器选择。
 
-如果要进入更早的阶段，需要实现更具体的子接口。常见关系可以先这样记：
+### 2. 广义 BeanPostProcessor 体系：接口、缓存列表、源码调用点要一起看
+
+Spring 里常说的 `BeanPostProcessor`，很多时候不是只指狭义接口，而是指一整套后处理器体系。
+
+不要把它理解成：
 
 ```text
-BeanPostProcessor
-  -> postProcessBeforeInitialization(...)
-  -> postProcessAfterInitialization(...)
-
-InstantiationAwareBeanPostProcessor
-  extends BeanPostProcessor
-  -> postProcessAfterInstantiation(...)
-  -> postProcessProperties(...) / postProcessPropertyValues(...)
-
-SmartInstantiationAwareBeanPostProcessor
-  extends InstantiationAwareBeanPostProcessor
-  -> determineCandidateConstructors(...)
-  -> getEarlyBeanReference(...)
-
-MergedBeanDefinitionPostProcessor
-  extends BeanPostProcessor
-  -> postProcessMergedBeanDefinition(...)
+一个 BeanPostProcessor 自动经历所有阶段
 ```
 
-所以同样叫 `BeanPostProcessor`，位置可能完全不同：
+更准确是：
+
+```text
+具体处理器实现了哪些接口
+  -> Spring 注册后用 instanceof 把它分到哪些缓存列表
+    -> Bean 创建到某个阶段时，只遍历对应缓存列表
+      -> 调用这个接口在该阶段暴露的方法
+```
+
+常见接口、缓存列表、调用位置可以放在一张图里看：
+
+```text
+beanFactory.beanPostProcessors
+  说明：所有注册进 BeanFactory 的 BeanPostProcessor 都先在这个总列表里
+  │
+  ├─ BeanPostProcessor
+  │  接口方法：
+  │    - postProcessBeforeInitialization(...)
+  │    - postProcessAfterInitialization(...)
+  │  调用位置：
+  │    initializeBean()
+  │      -> applyBeanPostProcessorsBeforeInitialization(...)
+  │      -> invokeInitMethods(...)
+  │      -> applyBeanPostProcessorsAfterInitialization(...)
+  │
+  ├─ instantiationAware 缓存列表
+  │  分类条件：
+  │    bp instanceof InstantiationAwareBeanPostProcessor
+  │  接口关系：
+  │    InstantiationAwareBeanPostProcessor extends BeanPostProcessor
+  │  接口方法：
+  │    - postProcessBeforeInstantiation(...)
+  │    - postProcessAfterInstantiation(...)
+  │    - postProcessProperties(...)
+  │    - postProcessPropertyValues(...)
+  │  调用位置：
+  │    resolveBeforeInstantiation()
+  │      -> postProcessBeforeInstantiation(...)
+  │
+  │    populateBean()
+  │      -> postProcessAfterInstantiation(...)
+  │      -> postProcessProperties(...)
+  │
+  ├─ smartInstantiationAware 缓存列表
+  │  分类条件：
+  │    bp instanceof SmartInstantiationAwareBeanPostProcessor
+  │  接口关系：
+  │    SmartInstantiationAwareBeanPostProcessor extends InstantiationAwareBeanPostProcessor
+  │  接口方法：
+  │    - predictBeanType(...)
+  │    - determineCandidateConstructors(...)
+  │    - getEarlyBeanReference(...)
+  │  调用位置：
+  │    createBeanInstance()
+  │      -> determineCandidateConstructors(...)
+  │
+  │    doCreateBean() 循环依赖提前暴露
+  │      -> getEarlyBeanReference(...)
+  │
+  └─ mergedDefinition 缓存列表
+     分类条件：
+       bp instanceof MergedBeanDefinitionPostProcessor
+     接口关系：
+       MergedBeanDefinitionPostProcessor extends BeanPostProcessor
+     接口方法：
+       - postProcessMergedBeanDefinition(...)
+     调用位置：
+       doCreateBean()
+         -> applyMergedBeanDefinitionPostProcessors(...)
+```
+
+所以真正要记住的是：
+
+```text
+接口决定“它有没有资格进入某类缓存列表”。
+缓存列表决定“某个生命周期阶段会遍历哪些处理器”。
+源码调用点决定“这个阶段具体调用哪个方法”。
+具体实现类决定“被调用后实际做什么”。
+```
+
+一个处理器如果实现多个接口，就可能进入多个缓存列表。
+
+但是：
+
+```text
+进入多个缓存列表
+  不等于每个阶段都一定做事
+  还要看它有没有重写对应方法，以及方法里有没有实际逻辑
+```
+
+### 3. AutowiredAnnotationBeanPostProcessor 是具体实现类，不是新阶段
+
+`AutowiredAnnotationBeanPostProcessor` 是一个具体实现类。
+
+它的声明大体是：
+
+```text
+AutowiredAnnotationBeanPostProcessor
+  implements SmartInstantiationAwareBeanPostProcessor
+  implements MergedBeanDefinitionPostProcessor
+  implements PriorityOrdered
+  implements BeanFactoryAware
+```
+
+所以它可能出现在多个阶段：
 
 ```text
 createBeanInstance()
   -> SmartInstantiationAwareBeanPostProcessor.determineCandidateConstructors(...)
+     典型实现：AutowiredAnnotationBeanPostProcessor
+     作用：处理 @Autowired 构造器候选判断
 
 doCreateBean()
   -> MergedBeanDefinitionPostProcessor.postProcessMergedBeanDefinition(...)
+     典型实现：AutowiredAnnotationBeanPostProcessor
+     作用：提前解析/缓存字段和方法注入元数据
 
 populateBean()
-  -> InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
   -> InstantiationAwareBeanPostProcessor.postProcessProperties(...)
+     典型实现：AutowiredAnnotationBeanPostProcessor
+     作用：真正处理 @Autowired / @Value 字段或方法注入
+     对应：[[4、依赖注入(DI)]] 的 [04.4.4]
+
+doCreateBean() 循环依赖提前暴露
+  -> SmartInstantiationAwareBeanPostProcessor.getEarlyBeanReference(...)
+     AutowiredAnnotationBeanPostProcessor 有资格被遍历
+     但它不是 AOP 早期代理的重点实现，AOP 重点看 AbstractAutoProxyCreator
 
 initializeBean()
   -> BeanPostProcessor.postProcessBeforeInitialization(...)
   -> BeanPostProcessor.postProcessAfterInitialization(...)
+     AutowiredAnnotationBeanPostProcessor 也具备 BeanPostProcessor 身份
+     但 @Autowired 字段 / 方法注入主线不在这里完成
+```
+
+### 4. 回到 @Autowired：最重要的是 populateBean 这条线
+
+对于字段注入、方法注入，重点链路是：
+
+```text
+populateBean()
+  -> for (InstantiationAwareBeanPostProcessor bp : instantiationAware)
+     -> bp.postProcessProperties(pvs, bean, beanName)
+        -> 如果 bp 的真实对象是 AutowiredAnnotationBeanPostProcessor
+           -> findAutowiringMetadata(...)
+           -> metadata.inject(...)
+           -> 完成 @Autowired / @Value 字段或方法注入
+```
+
+所以：
+
+```text
+InstantiationAwareBeanPostProcessor 是接口阶段。
+AutowiredAnnotationBeanPostProcessor 是这个阶段里的具体实现。
+```
+
+这就是为什么 `4、依赖注入(DI)` 里的 `[04.4.4] 可选：注解注入后处理器处理字段 / 方法注入`，可以对应到本文的 `AutowiredAnnotationBeanPostProcessor` 例子。
+
+### 5. 这一节最终要记住什么
+
+不要把 `BeanPostProcessor` 理解成一个固定阶段。
+
+更准确的理解是：
+
+```text
+BeanPostProcessor 是一套扩展点体系。
+
+Spring 在 Bean 创建生命周期的不同位置，
+按接口类型筛选并遍历处理器。
+
+一个具体处理器实现了哪些接口，
+决定它能参与哪些阶段。
+
+它在某个阶段真正做什么，
+取决于它重写了哪个方法。
 ```
 
 ## resolveBeforeInstantiation 常见吗：业务项目一般不用自己扩展
