@@ -1,6 +1,10 @@
 # BeanPostProcessor 源码分析
 
-BeanPostProcessor 接口也叫 Bean 后置处理器，作用是在 Bean 对象实例化和依赖注入完成后，在配置文件 bean 的 init-method(初始化方法)或者 InitializingBean 的 afterPropertiesSet 的前后添加我们自己的处理逻辑。注意是 Bean 实例化完毕后及依赖注入完成后触发的，接口的源码如下。
+狭义的 `BeanPostProcessor` 接口也叫 Bean 后置处理器，作用是在 Bean 对象实例化和依赖注入完成后，在配置文件 bean 的 init-method(初始化方法)或者 `InitializingBean.afterPropertiesSet()` 的前后添加我们自己的处理逻辑。
+
+注意：这句话只描述下面这个狭义接口的两个方法。Spring 里更常说的 `BeanPostProcessor` 体系还包括多个子接口，它们可以插入到实例化前、构造器选择、属性填充、早期代理、初始化前后等不同阶段。
+
+接口的源码如下。
 
 ```java
 public interface BeanPostProcessor {
@@ -261,6 +265,8 @@ postProcessProperties(...)
 > 
 > 因此，多个处理器可以同时存在；它们按注册顺序依次参与对应阶段。
 
+## BeanPostProcessor 的注册时机和排序
+
 共有两种方式实现：
 
 - 实现 BeanPostProcessor 接口，然后将此类注册到 Spring 即可；
@@ -317,7 +323,15 @@ public static void registerBeanPostProcessors(
 }
 ```
 
-在此我举例一个典型的例子 AutowiredAnnotationBeanPostProcessor，是 BeanPostProcessor 的一个子类，是@Autowired 和@Value 的具体实现，其他的子类你也可以按如下的流程自行走一边，注意我的例子只是一个最为简单的例子，也就是用@Autowired 注入了一个普通的字段对象
+## AutowiredAnnotationBeanPostProcessor：在 populateBean 阶段处理 @Autowired
+
+在此我举例一个典型的例子 `AutowiredAnnotationBeanPostProcessor`。
+
+它属于 `BeanPostProcessor` 体系，但更准确地说，它实现了 `SmartInstantiationAwareBeanPostProcessor`、`MergedBeanDefinitionPostProcessor`、`PriorityOrdered`、`BeanFactoryAware` 等接口。它不是只靠狭义 `BeanPostProcessor` 的 `postProcessBeforeInitialization` / `postProcessAfterInitialization` 两个方法工作。
+
+这里先只看它和 `@Autowired` / `@Value` 字段或方法注入最相关的一条线：在 `populateBean()` 阶段，Spring 遍历 `InstantiationAwareBeanPostProcessor`，调用 `postProcessProperties(...)`，`AutowiredAnnotationBeanPostProcessor` 就是在这里解析注入点并完成注入。
+
+下面这个例子是最简单的场景：用 `@Autowired` 注入一个普通字段对象。其他子类也可以按类似方式沿着生命周期阶段去看。
 
 我们看看 AutowiredAnnotationBeanPostProcessor 类，当然也是省略大部分代码：
 
@@ -355,7 +369,22 @@ public PropertyValues postProcessProperties(PropertyValues pvs, Object bean, Str
 }
 ```
 
-BeanPostProcessor 的职责是在 bean 初始化后进行实例的更改，所以我们在普通 bean 实例化的时候就可以看见它的身影 AbstractAutowireCapableBeanFactory 中的 populateBean 就是给 bean 属性填充值，同样我们省略大部分代码：
+这里不要理解成“所有 BeanPostProcessor 都是在初始化后修改实例”。
+
+更准确地说：
+
+```text
+狭义 BeanPostProcessor：
+  主要在 initializeBean() 的初始化前后执行。
+
+InstantiationAwareBeanPostProcessor：
+  是 BeanPostProcessor 的子接口，可以在 populateBean() 这类更早阶段参与属性填充。
+
+AutowiredAnnotationBeanPostProcessor：
+  通过 postProcessProperties(...) 参与 @Autowired / @Value 的字段或方法注入。
+```
+
+所以我们在普通 bean 的属性填充阶段就可以看见它的身影。`AbstractAutowireCapableBeanFactory` 中的 `populateBean()` 就是给 bean 属性填充值，同样我们省略大部分代码：
 
 ```java
 protected void populateBean(String beanName, RootBeanDefinition mbd, @Nullable BeanWrapper bw) {
