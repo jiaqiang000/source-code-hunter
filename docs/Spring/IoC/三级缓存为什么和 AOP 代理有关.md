@@ -148,17 +148,15 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │        │
      │        ├─ 先进入 populateBean 的通用属性填充流程
      │        │  对应：《4、依赖注入(DI)》里 [04.4.1] 到 [04.4.5] 这一段
-     │        │  说明：这一步不是简单地“立刻发现 A 需要 B”，而是先拿属性值、执行属性填充前扩展点、处理 autowire / 注解注入入口、进入 applyPropertyValues
-     │        │  注意：如果是 XML <property ref="b"> 主线，真正触发 getBean("b") 的关键点在 BeanDefinitionValueResolver.resolveReference(...)
+     │        │  说明：这一步不是简单地“立刻发现 A 需要 B”，而是先拿属性值、执行属性填充前扩展点，再根据依赖来源进入不同解析线
      │        │
      │        └─ A 需要 B
      │           说明：这是对上面属性填充流程的场景化压缩，不是一个独立源码方法
-     │           对应：
-     │             - XML <property ref="b"> 主线：BeanDefinitionValueResolver.resolveReference("b")
-     │             - @Autowired / @Resource 主线：InstantiationAwareBeanPostProcessor 处理属性注入时解析依赖
-     │             - XML autowire byName / byType 主线：autowireByName / autowireByType 解析依赖
-     │           本文主线按 XML <property ref="b"> 理解：
-     │             resolveReference("b") -> getBean("b")
+     │           可能来源：
+     │             - [04.4.4] 注解注入线：@Autowired / @Resource 后处理器解析注入点时触发 getBean("b")
+     │             - [04.4.5.1] pvs 属性值线：XML <property ref="b"> 通过 resolveReference("b") 触发 getBean("b")
+     │             - [04.4.3] XML autowire 线：autowireByName / autowireByType 推断依赖后触发或补充依赖
+     │           共同结果：一旦进入 getBean("b")，后面的循环依赖流程就和依赖来源无关
      │           │
      │           └─ getBean("b")
      │              作用：递归创建 B
@@ -177,7 +175,9 @@ AbstractAutoProxyCreator 可以把早期引用变成代理对象。
      │                 │  说明：这也是同一个 populateBean(...) 的一次具体执行，当前 beanName = "b"；前置属性填充步骤同上面的 populateBean("a")，这里不重复展开
      │                 │  │
      │                 │  └─ B 需要 A
-     │                 │     说明：和上面 A 需要 B 同理，这是对属性填充流程的场景化压缩；本文主线按 resolveReference("a") -> getBean("a") 理解
+     │                 │     说明：和上面 A 需要 B 同理，这是对属性填充流程的场景化压缩
+     │                 │     可能来源：注解注入线、pvs 属性值线或 XML autowire 线
+     │                 │     共同结果：进入 getBean("a")，然后 B 回头找正在创建中的 A
      │                 │     │
      │                 │     └─ getBean("a")
      │                 │        │

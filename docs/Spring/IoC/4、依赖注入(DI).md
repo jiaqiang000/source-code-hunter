@@ -321,28 +321,31 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │        │
                        │        ├─ [04.4.2] 可选：InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
                        │        │        作用：实例化后、属性填充前的扩展点
-                       │        │        触发条件：存在 InstantiationAwareBeanPostProcessor
-                       │        │        结果：可能允许继续填充，也可能直接停止属性填充
+                       │        │        真正意义：允许扩展点决定是否继续属性填充
+                       │        │        常见情况：普通 @Autowired / @Resource 注入通常不靠这里完成
                        │        │        专题标记：BeanPostProcessor
                        │        │
                        │        ├─ [04.4.3] 可选：autowireByName / autowireByType
                        │        │        作用：XML autowire 模式下，按名称或类型补充 pvs
+                       │        │        结果：推断出的依赖进入 pvs 这条线，后续走 [04.4.5]
                        │        │        边界：不是所有 Bean 都走，只在 autowire mode 开启时走
                        │        │
-                       │        ├─ [04.4.4] 可选：InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
-                       │        │        作用：让 InstantiationAwareBeanPostProcessor 处理 pvs
-                       │        │        触发条件：存在 InstantiationAwareBeanPostProcessor
-                       │        │        说明：@Autowired / @Resource 这类注解注入会在这里附近参与
+                       │        ├─ [04.4.4] 可选：注解注入后处理器处理字段 / 方法注入
+                       │        │        作用：@Autowired / @Resource 这类注入点在这里附近被解析
+                       │        │        关键：解析依赖时也会 getBean(refName)
+                       │        │        写入：后处理器通常自己反射写字段 / 调方法
+                       │        │        边界：不一定进入后面的 applyPropertyValues 写入；也不是普通 BeanPostProcessor 初始化后处理
                        │        │        补充：同一代码块里还可能执行 dependency check
-                       │        │        边界：不是普通 BeanPostProcessor 初始化后处理
                        │        │        专题标记：BeanPostProcessor；@Autowired / @Resource 注解注入入口
                        │        │
-                       │        └─ [04.4.5] applyPropertyValues(...)
-                       │                 作用：使用最终 pvs 解析属性值并写入对象
+                       │        └─ [04.4.5] pvs 收口：applyPropertyValues(...)
+                       │                 作用：把 pvs 中的属性值解析并写入对象
+                       │                 适用：XML <property>，以及 XML autowire 补充进 pvs 的属性
+                       │                 边界：注解字段 / 方法注入很多时候已在 [04.4.4] 完成，不一定靠这里写入
                        │                 │
                        │                 ├─ [04.4.5.1] BeanDefinitionValueResolver.resolveValueIfNecessary(...)
                        │                 │        作用：解析每个 PropertyValue，比如 RuntimeBeanReference、TypedStringValue、集合等配置值
-                       │                 │        循环依赖连接点：遇到 refName 时递归 getBean(refName)
+                       │                 │        XML <property ref="b"> 连接点：resolveReference("b") -> getBean("b")
                        │                 │
                        │                 └─ [04.4.5.2] BeanWrapper.setPropertyValues(...)
                        │                          作用：把解析后的值真正写入属性 / setter
@@ -1692,7 +1695,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
          * ！！！！！！！！！！！！！
          * 阅读标注：这里对应导图 04.4.2，postProcessAfterInstantiation 可选扩展点
          * 作用：给 InstantiationAwareBeanPostProcessor 一个机会，决定是否继续属性填充
-         * 触发条件：存在 InstantiationAwareBeanPostProcessor
+         * 真正意义：Bean 已经实例化出来，但属性还没填；扩展点可以在这里决定后续属性填充是否继续
+         * 常见情况：普通 @Autowired / @Resource 注入通常不靠这里完成
          * 边界：这里还没有真正写入属性
          * ！！！！！！！！！！！！！
          */
@@ -1717,6 +1721,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
          * ！！！！！！！！！！！！！
          * 阅读标注：这里对应导图 04.4.3，autowireByName / autowireByType 可选分支
          * 作用：XML autowire 模式下，按名称或类型补充 pvs
+         * 结果：推断出来的依赖会被补充到 pvs，后续走 04.4.5 applyPropertyValues
          * 边界：不是所有 Bean 都走，只有 autowire mode 开启时才走
          * ！！！！！！！！！！！！！
          */
@@ -1744,12 +1749,13 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
         /**
          * ！！！！！！！！！！！！！
-         * 阅读标注：这里对应导图 04.4.4，postProcessPropertyValues 可选扩展点
-         * 作用：让 InstantiationAwareBeanPostProcessor 处理 / 修改 / 补充 pvs
-         * 触发条件：存在 InstantiationAwareBeanPostProcessor
-         * 说明：@Autowired / @Resource 这类注解注入会在这里附近参与
+         * 阅读标注：这里对应导图 04.4.4，注解注入后处理器处理字段 / 方法注入
+         * 作用：让 InstantiationAwareBeanPostProcessor 处理 pvs 或直接处理字段 / 方法注入点
+         * 说明：@Autowired / @Resource 这类注解注入会在这里附近解析依赖
+         * 关键：解析依赖时也会 getBean(refName)，因此可以衔接到循环依赖专题里的 getBean("b") 后续流程
+         * 写入：后处理器通常自己反射写字段 / 调方法
+         * 边界：不一定进入后面的 applyPropertyValues 写入；也不是 initializeBean() 里的初始化后 BeanPostProcessor
          * 补充：同一代码块里还可能执行 dependency check
-         * 边界：这不是 initializeBean() 里的初始化后 BeanPostProcessor
          * ！！！！！！！！！！！！！
          */
         if (hasInstAwareBpps || needsDepCheck) {
@@ -1774,8 +1780,11 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
         }
         /**
          * ！！！！！！！！！！！！！
-         * 阅读标注：这里对应导图 04.4.5，applyPropertyValues 使用最终 pvs
-         * 作用：前面已经拿到 / 补充 / 处理过 pvs，这里开始解析属性值并准备写入对象
+         * 阅读标注：这里对应导图 04.4.5，pvs 收口 applyPropertyValues
+         * 作用：前面已经拿到 / 补充 / 处理过 pvs，这里开始解析 pvs 中的属性值并写入对象
+         * 适用：XML <property>，以及 XML autowire 补充进 pvs 的属性
+         * 边界：注解字段 / 方法注入很多时候已在 04.4.4 由后处理器完成，不一定靠这里写入
+         * 注意：如果最终 pvs 为空，applyPropertyValues(...) 内部会直接返回
          * ！！！！！！！！！！！！！
          */
         applyPropertyValues(beanName, mbd, bw, pvs);
