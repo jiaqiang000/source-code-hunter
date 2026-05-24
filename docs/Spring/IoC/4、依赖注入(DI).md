@@ -319,18 +319,21 @@ BeanDefinitionValueResolver 负责把配置值解析成真实依赖对象。
                        │        ├─ [04.4.1] mbd.getPropertyValues()
                        │        │        作用：拿到 BeanDefinition 中已有的属性值
                        │        │
-                       │        ├─ [04.4.2] InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
+                       │        ├─ [04.4.2] 可选：InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(...)
                        │        │        作用：实例化后、属性填充前的扩展点
+                       │        │        触发条件：存在 InstantiationAwareBeanPostProcessor
                        │        │        结果：可能允许继续填充，也可能直接停止属性填充
                        │        │        专题标记：BeanPostProcessor
                        │        │
-                       │        ├─ [04.4.3] autowireByName / autowireByType
+                       │        ├─ [04.4.3] 可选：autowireByName / autowireByType
                        │        │        作用：XML autowire 模式下，按名称或类型补充 pvs
                        │        │        边界：不是所有 Bean 都走，只在 autowire mode 开启时走
                        │        │
-                       │        ├─ [04.4.4] InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
+                       │        ├─ [04.4.4] 可选：InstantiationAwareBeanPostProcessor.postProcessPropertyValues(...)
                        │        │        作用：让 InstantiationAwareBeanPostProcessor 处理 pvs
+                       │        │        触发条件：存在 InstantiationAwareBeanPostProcessor
                        │        │        说明：@Autowired / @Resource 这类注解注入会在这里附近参与
+                       │        │        补充：同一代码块里还可能执行 dependency check
                        │        │        边界：不是普通 BeanPostProcessor 初始化后处理
                        │        │        专题标记：BeanPostProcessor；@Autowired / @Resource 注解注入入口
                        │        │
@@ -1689,6 +1692,7 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
          * ！！！！！！！！！！！！！
          * 阅读标注：这里对应导图 04.4.2，postProcessAfterInstantiation 可选扩展点
          * 作用：给 InstantiationAwareBeanPostProcessor 一个机会，决定是否继续属性填充
+         * 触发条件：存在 InstantiationAwareBeanPostProcessor
          * 边界：这里还没有真正写入属性
          * ！！！！！！！！！！！！！
          */
@@ -1742,7 +1746,9 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
          * ！！！！！！！！！！！！！
          * 阅读标注：这里对应导图 04.4.4，postProcessPropertyValues 可选扩展点
          * 作用：让 InstantiationAwareBeanPostProcessor 处理 / 修改 / 补充 pvs
+         * 触发条件：存在 InstantiationAwareBeanPostProcessor
          * 说明：@Autowired / @Resource 这类注解注入会在这里附近参与
+         * 补充：同一代码块里还可能执行 dependency check
          * 边界：这不是 initializeBean() 里的初始化后 BeanPostProcessor
          * ！！！！！！！！！！！！！
          */
