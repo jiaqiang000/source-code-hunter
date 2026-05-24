@@ -521,12 +521,29 @@ final class CglibAopProxy implements AopProxy, Serializable {
                     enhancer.setUseCache(false);
                 }
             }
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：CGLIB 代理的本质是“生成目标类的子类”。
+             * 所以这里必须设置 superclass，让 CGLIB 生成的代理类 extends 目标类。
+             *
+             * 这也解释了为什么 final class 会影响代理：
+             * final class 不能被继承，CGLIB 就没法生成它的子类代理。
+             * ！！！！！！！！！！！！！
+             */
             enhancer.setSuperclass(proxySuperClass);
             enhancer.setStrategy(new MemorySafeUndeclaredThrowableStrategy(UndeclaredThrowableException.class));
             enhancer.setInterfaces(AopProxyUtils.completeProxiedInterfaces(this.advised));
             enhancer.setInterceptDuringConstruction(false);
 
             Callback[] callbacks = getCallbacks(rootClass);
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：callbacks 是 CGLIB 子类方法被调用时的回调处理器。
+             * 代理对象的方法被调用后，不是直接执行目标方法，而是先进入对应 callback。
+             *
+             * 后面 3.2 的 intercept(...) 就是其中一种核心 callback。
+             * ！！！！！！！！！！！！！
+             */
             enhancer.setCallbacks(callbacks);
             enhancer.setCallbackFilter(new ProxyCallbackFilter(
                     this.advised.getConfigurationOnlyCopy(), this.fixedInterceptorMap, this.fixedInterceptorOffset));
@@ -537,7 +554,22 @@ final class CglibAopProxy implements AopProxy, Serializable {
             }
             enhancer.setCallbackTypes(types);
 
-            // 通过 enhancer 生成代理对象
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：这里真正生成 CGLIB 代理对象。
+             * 生成出来的对象可以粗略理解为：
+             *
+             * class XxxService$$EnhancerBySpringCGLIB extends XxxService {
+             *     public void someMethod(...) {
+             *         callback.intercept(this, method, args, methodProxy);
+             *     }
+             * }
+             *
+             * 所以 public/protected/package 可重写方法才有机会被子类代理拦截。
+             * private 方法对子类不可见，final 方法不能被重写，static 方法不是对象虚方法调用，
+             * 这些都不适合作为 CGLIB AOP 拦截点。
+             * ！！！！！！！！！！！！！
+             */
             Object proxy;
             if (this.constructorArgs != null) {
                 proxy = enhancer.create(this.constructorArgTypes, this.constructorArgs);
@@ -669,6 +701,21 @@ CglibAopProxy 的 intercept() 回调方法实现和 JdkDynamicAopProxy 的 invok
 final class CglibAopProxy implements AopProxy, Serializable {
 
     public Object intercept(Object proxy, Method method, Object[] args, MethodProxy methodProxy) throws Throwable {
+        /**
+         * ！！！！！！！！！！！！！
+         * 阅读标注：能走到这里，说明当前调用已经进入了 CGLIB 生成的子类代理方法。
+         *
+         * 调用链可以先这样理解：
+         * 外部代码调用 proxy.someMethod(...)
+         *   -> CGLIB 子类重写的 someMethod(...)
+         *      -> callback.intercept(proxy, method, args, methodProxy)
+         *
+         * 所以 CGLIB 拦截依赖“子类重写方法”：
+         * - final method 不能被重写，所以进不了这里
+         * - private method 子类不可见，也不能重写，所以进不了这里
+         * - static method 属于类，不是对象虚方法调用，也不会按这个链路进来
+         * ！！！！！！！！！！！！！
+         */
         Object oldProxy = null;
         boolean setProxyContext = false;
         Class<?> targetClass = null;
@@ -682,8 +729,15 @@ final class CglibAopProxy implements AopProxy, Serializable {
             if (target != null) {
                 targetClass = target.getClass();
             }
-            // 从 adviced 对象中获取配置好的拦截器链，advised 是一个 AdvisedSupport对象，
-            // 而 AdvisedSupport 也是 ProxyFactoryBean 的父类之一。
+            /**
+             * ！！！！！！！！！！！！！
+             * 阅读标注：这里开始和 JDK 动态代理路径合流。
+             * 不管前面是 JDK 的 invoke(...) 还是 CGLIB 的 intercept(...)，
+             * 真正要执行哪些增强，都要从 advised 中取当前 method 对应的拦截器链。
+             *
+             * 如果这是事务代理，事务相关的 TransactionInterceptor 就会出现在这条 chain 里。
+             * ！！！！！！！！！！！！！
+             */
             List<Object> chain = this.advised.getInterceptorsAndDynamicInterceptionAdvice(method, targetClass);
             Object retVal;
             // 如果没有配置 AOP 通知，那么直接使用 CGLIB 的 MethodProxy 对象完成对目标方法的调用
@@ -691,9 +745,16 @@ final class CglibAopProxy implements AopProxy, Serializable {
                 retVal = methodProxy.invoke(target, args);
             }
             else {
-                // 通过 CglibMethodInvocation 来启动 advice 通知，
-                // CglibMethodInvocation 是 ReflectiveMethodInvocation 的子类
-                // 最终还是调用的 ReflectiveMethodInvocation 对象的 proceed()方法
+                /**
+                 * ！！！！！！！！！！！！！
+                 * 阅读标注：有拦截器链时，不会直接调用目标方法。
+                 * Spring 会把 proxy、target、method、args、chain 包成 CglibMethodInvocation，
+                 * 然后调用 proceed() 一层层推进拦截器链，最后才到目标方法。
+                 *
+                 * 事务生效时，就是在这个链里先执行 TransactionInterceptor，
+                 * 再由 TransactionInterceptor 包住后续 invocation.proceed()。
+                 * ！！！！！！！！！！！！！
+                 */
                 retVal = new CglibMethodInvocation(proxy, target, method, args, targetClass, chain, methodProxy).proceed();
             }
             retVal = processReturnType(proxy, target, method, retVal);
